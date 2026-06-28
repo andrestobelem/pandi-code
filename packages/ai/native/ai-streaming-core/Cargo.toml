@@ -1,0 +1,19 @@
+[package]
+name = "ai-streaming-core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Rust streaming-core port for the pi ai package (migration pilot). Currently: partial-JSON parity gate."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# `gate` selects the pure, offline conformance build (no NAPI / node linkage).
+# It is a no-op today (no NAPI yet) so `cargo test --features gate` works as the CI entry point.
+default = []
+gate = []

@@ -1,0 +1,192 @@
+[
+  {
+    "name": "empty",
+    "input": "",
+    "expected": "{}"
+  },
+  {
+    "name": "whitespace-only",
+    "input": "   \n\t  ",
+    "expected": "{}"
+  },
+  {
+    "name": "complete-object",
+    "input": "{\"a\":1,\"b\":\"hi\"}",
+    "expected": "{\"a\":1,\"b\":\"hi\"}"
+  },
+  {
+    "name": "complete-array",
+    "input": "[1,2,3]",
+    "expected": "[1,2,3]"
+  },
+  {
+    "name": "complete-nested",
+    "input": "{\"a\":{\"b\":[1,{\"c\":true}]},\"d\":null}",
+    "expected": "{\"a\":{\"b\":[1,{\"c\":true}]},\"d\":null}"
+  },
+  {
+    "name": "complete-empty-object",
+    "input": "{}",
+    "expected": "{}"
+  },
+  {
+    "name": "complete-string-toplevel",
+    "input": "\"hello\"",
+    "expected": "\"hello\""
+  },
+  {
+    "name": "complete-number-toplevel",
+    "input": "42",
+    "expected": "42"
+  },
+  {
+    "name": "complete-decimal",
+    "input": "{\"x\":1.5,\"y\":0.5,\"z\":1.0}",
+    "expected": "{\"x\":1.5,\"y\":0.5,\"z\":1}"
+  },
+  {
+    "name": "complete-true-toplevel",
+    "input": "true",
+    "expected": "true"
+  },
+  {
+    "name": "complete-null-toplevel",
+    "input": "null",
+    "expected": "null"
+  },
+  {
+    "name": "partial-obj-after-colon",
+    "input": "{\"a\":1,\"b\":",
+    "expected": "{\"a\":1}"
+  },
+  {
+    "name": "partial-obj-mid-key",
+    "input": "{\"a\"",
+    "expected": "{}"
+  },
+  {
+    "name": "partial-obj-open",
+    "input": "{",
+    "expected": "{}"
+  },
+  {
+    "name": "partial-obj-key-only-prefix",
+    "input": "{\"a\":1,\"b",
+    "expected": "{\"a\":1}"
+  },
+  {
+    "name": "partial-arr-trailing-comma",
+    "input": "[1,2,",
+    "expected": "[1,2]"
+  },
+  {
+    "name": "partial-nested-collection",
+    "input": "{\"a\":[1,2,",
+    "expected": "{\"a\":[1,2]}"
+  },
+  {
+    "name": "partial-string-value",
+    "input": "{\"a\":\"hel",
+    "expected": "{\"a\":\"hel\"}"
+  },
+  {
+    "name": "partial-string-toplevel",
+    "input": "\"incompl",
+    "expected": "\"incompl\""
+  },
+  {
+    "name": "trailing-backslash-eof",
+    "input": "{\"a\":\"foo\\",
+    "expected": "{\"a\":\"foo\"}"
+  },
+  {
+    "name": "malformed-escape-repair",
+    "input": "{\"path\":\"A\\H\",\"text\":\"col1\\tcol2\"}",
+    "expected": "{\"path\":\"A\\\\H\",\"text\":\"col1\\tcol2\"}"
+  },
+  {
+    "name": "raw-newline-in-string",
+    "input": "{\"a\":\"line1\nline2\"}",
+    "expected": "{\"a\":\"line1\\nline2\"}"
+  },
+  {
+    "name": "raw-tab-in-string",
+    "input": "{\"a\":\"c1\tc2\"}",
+    "expected": "{\"a\":\"c1\\tc2\"}"
+  },
+  {
+    "name": "unicode-escape-complete",
+    "input": "{\"a\":\"\\u00e9\"}",
+    "expected": "{\"a\":\"é\"}"
+  },
+  {
+    "name": "unicode-escape-truncated",
+    "input": "{\"a\":\"x\\u00",
+    "expected": "{\"a\":\"x\"}"
+  },
+  {
+    "name": "partial-null-keyword",
+    "input": "nu",
+    "expected": "{}"
+  },
+  {
+    "name": "partial-true-keyword",
+    "input": "tr",
+    "expected": "true"
+  },
+  {
+    "name": "partial-false-keyword",
+    "input": "fal",
+    "expected": "false"
+  },
+  {
+    "name": "falsy-zero",
+    "input": "0",
+    "expected": "0"
+  },
+  {
+    "name": "falsy-false",
+    "input": "false",
+    "expected": "false"
+  },
+  {
+    "name": "falsy-empty-string",
+    "input": "\"\"",
+    "expected": "\"\""
+  },
+  {
+    "name": "falsy-bare-string",
+    "input": "\"abc\"",
+    "expected": "\"abc\""
+  },
+  {
+    "name": "special-nan-toplevel",
+    "input": "NaN",
+    "expected": "null"
+  },
+  {
+    "name": "special-infinity-toplevel",
+    "input": "Infinity",
+    "expected": "null"
+  },
+  {
+    "name": "special-neg-infinity-toplevel",
+    "input": "-Infinity",
+    "expected": "null"
+  },
+  {
+    "name": "special-nan-nested",
+    "input": "{\"x\":NaN,\"y\":1}",
+    "expected": "{\"x\":null,\"y\":1}"
+  },
+  {
+    "name": "partial-number-trailing",
+    "input": "{\"a\":123",
+    "expected": "{\"a\":123}"
+  },
+  {
+    "name": "negative-number",
+    "input": "{\"a\":-5}",
+    "expected": "{\"a\":-5}"
+  }
+]
