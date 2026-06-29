@@ -717,11 +717,28 @@ async function driveRustDecoder(args: {
 			stopReason?: StopReason;
 			errorMessage?: string;
 			usage?: AssistantMessage["usage"];
+			content?: Array<{ type?: string; thinkingSignature?: string }>;
 		};
 		if (finalMsg.responseId != null) output.responseId = finalMsg.responseId;
 		if (finalMsg.stopReason != null) output.stopReason = finalMsg.stopReason;
 		if (finalMsg.errorMessage != null) output.errorMessage = finalMsg.errorMessage;
 		applyUsage(finalMsg.usage);
+		// Reconcile thinking-block signatures from the settled content. signature_delta mutates the
+		// Rust decoder's internal thinking_signature WITHOUT emitting a canonical event, so a stream
+		// that truncates after signature_delta but before content_block_stop never carries the signed
+		// snapshot through assignBlock — output.content[i].thinkingSignature is stranded at "". The
+		// settled final_message() DOES hold the signature (content_snapshot reads thinking_signature),
+		// and the TS path preserves it via in-place mutation, so copy it back only when local is empty.
+		if (finalMsg.content) {
+			for (let i = 0; i < output.content.length; i++) {
+				const block = output.content[i] as { type?: string; thinkingSignature?: string };
+				if (block?.type !== "thinking") continue;
+				const settled = finalMsg.content[i];
+				if (settled?.type === "thinking" && settled.thinkingSignature && !block.thinkingSignature) {
+					block.thinkingSignature = settled.thinkingSignature;
+				}
+			}
+		}
 		calculateCost(model, output.usage);
 	} finally {
 		// Always release the body reader lock (mirrors the TS path's iterateSseMessages finally) — on

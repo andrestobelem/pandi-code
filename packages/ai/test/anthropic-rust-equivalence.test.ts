@@ -228,6 +228,50 @@ describe("PI_RUST_STREAMING flag-gate safety properties", () => {
 		expect(JSON.stringify(argsOn)).toBe('{"old_string":"a","new_string":"b"}'); // wire order, not sorted
 	});
 
+	it("preserves a thinking-block signature when the stream truncates after signature_delta (no content_block_stop)", async () => {
+		// signature_delta mutates the Rust decoder's internal thinking_signature WITHOUT emitting a
+		// canonical event, so a stream that ends before content_block_stop never carries the signed
+		// snapshot through assignBlock. driveRustDecoder must reconcile thinkingSignature from
+		// final_message(). Asserts OFF==ON parity for this never-recorded truncation case.
+		const enc = new TextEncoder();
+		const frames = [
+			{
+				event: "message_start",
+				data: { type: "message_start", message: { id: "msg_sig", usage: { input_tokens: 2, output_tokens: 0 } } },
+			},
+			{
+				event: "content_block_start",
+				data: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+			},
+			{
+				event: "content_block_delta",
+				data: {
+					type: "content_block_delta",
+					index: 0,
+					delta: { type: "thinking_delta", thinking: "Let me think" },
+				},
+			},
+			{
+				event: "content_block_delta",
+				data: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig-abc" } },
+			},
+			// stream TRUNCATES here: no content_block_stop, no message_stop.
+		];
+		const wire = frames.map((f) => `event: ${f.event}\ndata: ${JSON.stringify(f.data)}\n`).join("\n");
+		const chunks = [Array.from(enc.encode(wire))];
+		const model = getModel("anthropic", "claude-haiku-4-5");
+
+		const off = await streamAnthropic(model, context, { client: fakeClient(chunks), env: {} }).result();
+		const on = await streamAnthropic(model, context, {
+			client: fakeClient(chunks),
+			env: { PI_RUST_STREAMING: "1" },
+		}).result();
+		const sigOff = (off.content[0] as { thinkingSignature?: string }).thinkingSignature;
+		const sigOn = (on.content[0] as { thinkingSignature?: string }).thinkingSignature;
+		expect(sigOff).toBe("sig-abc"); // TS path preserves it via in-place mutation
+		expect(sigOn).toBe(sigOff); // Rust path must reconcile it from final_message()
+	});
+
 	it("process.env force-OFF wins over options.env (kill switch)", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 		const prev = process.env.PI_RUST_STREAMING;
