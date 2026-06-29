@@ -101,12 +101,52 @@ stably). A future fixture containing a float, an exponent, a `> 2^53` integer, o
 a fixture. The test includes a u8 range pre-check to surface a non-u8 anthropic fixture as a
 readable assertion rather than an opaque serde error.
 
-## Out of scope (this increment)
+## Out of scope
 
-Incremental/push/streaming wasm exports; wiring Rust into production `src/` (the `PI_RUST_STREAMING`
-swap); NAPI / native `.node`; multi-platform prebuilds; a partial-json wasm export; any CI change
+Wiring Rust into production `src/` (the `PI_RUST_STREAMING` swap); NAPI / native `.node`;
+multi-platform prebuilds; a partial-json wasm export; OpenAI incremental decode; any CI change
 (no Rust toolchain in `ci.yml`). The behavioral gate rides the existing `npm test`; the staleness
-guard and `gate:rust` stay manual/local.
+guard and `gate:rust` stay manual/local. (Increment 5 added the Anthropic *incremental* decoder
+below — still gate-only, no production wiring.)
+
+## Increment 5 — incremental (streaming) Anthropic decoder
+
+The decoder is split into a stateful core `AnthropicStreamDecoder` (`new` / `take_start` /
+`push(&[u8])` / `finish` / `final_message`) in `src/anthropic.rs`; the one-shot `decode_anthropic`
+is re-expressed on top of it (`new + push(each chunk) + finish`), so the unchanged one-shot gate
+(`anthropic_conformance.rs`) is the proof the split is byte-identical. `src/sse.rs` similarly exposes
+`SseFramer` (`new`/`push`/`flush`); `parse_sse` is now a thin wrapper over it.
+
+**Boundary (`wasm.rs`, wasm32-only):** `AnthropicIncrementalDecoder` — a JS class: feed a
+`Uint8Array` per `push`, each call returns a canonical JSON array string of the events it produced,
+`final_message` returns the canonical settled message. Plus `decode_anthropic_incremental_canonical(
+chunks_json, schedule, …)` — one call that canonicalizes `{events, final}` in Rust, so the JS gate
+is a pure string-equality check.
+
+**Three feeding schedules** (`anthropic_incremental_conformance.rs` cargo + `wasm-incremental.test.ts`
+JS): `oneshot` (all bytes one push — the floor proving the wrapper still matches), `recorded` (the
+recorded network chunks — NOT new coverage; `parse_sse` already loops over those boundaries), and
+**`byte`** (every byte its own push — the genuinely new coverage: incomplete-multibyte carry via
+`Utf8Stream.pending`, mid-line/mid-event/mid-json line buffering, terminal deferral across arbitrary
+splits). All assert `== row.expected`; the JS class path additionally cross-checks against the
+convenience fn's `recorded` output (so the per-push boundary marshalling is proven to agree).
+
+**Latch-and-defer terminal contract:** `push` never emits the terminal done/error. A terminal
+(event:error / parse-fail → `terminal`; unhandled stop reason → `runtime_error`) is latched and
+drained in `finish` (precedence: runtime_error > terminal > ended-before-message_stop). After a latch,
+all further events are dropped — faithful to the former `iterate_anthropic_events` early-return and
+`break 'assembly`.
+
+**Two fixtures added** (corpus 13→15) to make the new coverage real — the adversarial review found the
+prior corpus was 100% ASCII with no unhandled-stop case: `multibyte-text-emoji-cjk` (2/3/4-byte UTF-8;
+exercises `Utf8Stream.pending` under the `byte` schedule) and `unhandled-stop-reason` (drives the
+`runtime_error` path and proves post-terminal content is suppressed).
+
+**Still gate-only.** Forward-looking, NOT implemented: a production `PI_RUST_STREAMING` adapter would,
+in `anthropic-messages.ts` `stream()`, replace the `iterateSseMessages` / `iterateAnthropicEvents`
+byte loop — feed `response.body` reader chunks to `AnthropicIncrementalDecoder.push`, route the
+returned events to `stream.push`, and keep the abort/error path in the TS adapter (the decoder owns
+neither I/O nor cancellation).
 
 ## tsgo / biome notes
 

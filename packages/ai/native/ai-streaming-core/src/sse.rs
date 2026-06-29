@@ -144,40 +144,70 @@ impl Utf8Stream {
 	}
 }
 
-/// Port of iterateSseMessages: ordered byte chunks -> ordered ServerSentEvents.
-pub fn parse_sse(chunks: &[Vec<u8>]) -> Vec<ServerSentEvent> {
-	let mut decoder = Utf8Stream::new();
-	let mut state = SseDecoderState::new();
-	let mut buffer = String::new();
-	let mut out: Vec<ServerSentEvent> = Vec::new();
+/// Stateful SSE framer: the chunk loop body of `iterateSseMessages` lifted out so a streaming
+/// caller can `push` byte chunks one at a time and `flush` at end-of-stream. `parse_sse` below is
+/// re-expressed on top of it, so the framer's external behavior is provably the one-shot behavior.
+pub struct SseFramer {
+	decoder: Utf8Stream,
+	state: SseDecoderState,
+	buffer: String,
+}
 
-	for chunk in chunks {
-		buffer.push_str(&decoder.decode(chunk));
-		while let Some((line, rest)) = consume_line(&buffer) {
-			buffer = rest;
-			if let Some(ev) = decode_sse_line(&line, &mut state) {
+impl SseFramer {
+	pub fn new() -> Self {
+		SseFramer { decoder: Utf8Stream::new(), state: SseDecoderState::new(), buffer: String::new() }
+	}
+
+	/// Feed one byte chunk; returns the ServerSentEvents that became complete with this chunk.
+	/// EXACTLY the former per-chunk loop body.
+	pub fn push(&mut self, chunk: &[u8]) -> Vec<ServerSentEvent> {
+		let mut out = Vec::new();
+		self.buffer.push_str(&self.decoder.decode(chunk));
+		while let Some((line, rest)) = consume_line(&self.buffer) {
+			self.buffer = rest;
+			if let Some(ev) = decode_sse_line(&line, &mut self.state) {
 				out.push(ev);
 			}
 		}
+		out
 	}
 
-	buffer.push_str(&decoder.flush());
-	while let Some((line, rest)) = consume_line(&buffer) {
-		buffer = rest;
-		if let Some(ev) = decode_sse_line(&line, &mut state) {
+	/// End-of-stream drain. EXACTLY the former tail, IN ORDER:
+	/// decoder.flush -> drain complete lines -> non-empty trailing buffer as a line -> flush_sse_event.
+	pub fn flush(&mut self) -> Vec<ServerSentEvent> {
+		let mut out = Vec::new();
+		self.buffer.push_str(&self.decoder.flush());
+		while let Some((line, rest)) = consume_line(&self.buffer) {
+			self.buffer = rest;
+			if let Some(ev) = decode_sse_line(&line, &mut self.state) {
+				out.push(ev);
+			}
+		}
+		if !self.buffer.is_empty() {
+			if let Some(ev) = decode_sse_line(&self.buffer, &mut self.state) {
+				out.push(ev);
+			}
+		}
+		if let Some(ev) = flush_sse_event(&mut self.state) {
 			out.push(ev);
 		}
+		out
 	}
+}
 
-	if !buffer.is_empty() {
-		if let Some(ev) = decode_sse_line(&buffer, &mut state) {
-			out.push(ev);
-		}
+impl Default for SseFramer {
+	fn default() -> Self {
+		Self::new()
 	}
+}
 
-	if let Some(ev) = flush_sse_event(&mut state) {
-		out.push(ev);
+/// Port of iterateSseMessages: ordered byte chunks -> ordered ServerSentEvents.
+pub fn parse_sse(chunks: &[Vec<u8>]) -> Vec<ServerSentEvent> {
+	let mut framer = SseFramer::new();
+	let mut out: Vec<ServerSentEvent> = Vec::new();
+	for chunk in chunks {
+		out.extend(framer.push(chunk));
 	}
-
+	out.extend(framer.flush());
 	out
 }

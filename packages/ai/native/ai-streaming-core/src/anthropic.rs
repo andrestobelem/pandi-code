@@ -7,13 +7,18 @@
 //! model-rate-table-derived) and the streaming scratch fields (index, partialJson) are omitted;
 //! everything else — event order, contentIndex, text/thinking content, and per-delta parsed
 //! tool arguments — is preserved exactly.
+//!
+//! Increment 5: the assembly is split into a stateful `AnthropicStreamDecoder` (new/push/finish)
+//! so a caller can feed byte chunks one at a time (the incremental/streaming boundary). The
+//! one-shot `decode_anthropic` is re-expressed on top of that decoder, so the unchanged 13-row
+//! conformance gate is the proof the split is byte-identical.
 
 use serde_json::Value;
 
 use crate::partial_json::{
 	jint, js_num, js_obj, js_str, parse_streaming_json, parse_with_repair_value, value_to_jsval, JsVal,
 };
-use crate::sse::{parse_sse, ServerSentEvent};
+use crate::sse::{ServerSentEvent, SseFramer};
 
 const MESSAGE_EVENTS: [&str; 6] = [
 	"message_start",
@@ -176,41 +181,6 @@ fn map_stop_reason(reason: &str, stop_details: &Value) -> Result<(String, Option
 	}
 }
 
-/// Port of iterateAnthropicEvents. Returns the events successfully yielded, plus a terminal error
-/// message if the generator threw (event: error / parse failure / ended-before-message_stop).
-fn iterate_anthropic_events(sse: &[ServerSentEvent]) -> (Vec<Value>, Option<String>) {
-	let mut yielded: Vec<Value> = Vec::new();
-	let mut saw_start = false;
-	let mut saw_end = false;
-	for e in sse {
-		if e.event.as_deref() == Some("error") {
-			return (yielded, Some(e.data.clone()));
-		}
-		let name = e.event.clone().unwrap_or_default();
-		if !MESSAGE_EVENTS.contains(&name.as_str()) {
-			continue;
-		}
-		match parse_with_repair_value(&e.data) {
-			Ok(v) => {
-				match v["type"].as_str() {
-					Some("message_start") => saw_start = true,
-					Some("message_stop") => saw_end = true,
-					_ => {}
-				}
-				yielded.push(v);
-			}
-			Err(()) => {
-				// V8-derived parse error; normalize to a structural sentinel (corpus avoids this path).
-				return (yielded, Some(format!("Could not parse Anthropic SSE event {name}")));
-			}
-		}
-	}
-	if saw_start && !saw_end {
-		return (yielded, Some("Anthropic stream ended before message_stop".to_string()));
-	}
-	(yielded, None)
-}
-
 fn catch(out: &mut Output, events: &mut Vec<JsVal>, message: String) {
 	// Signal-abort is not modeled at gate time, so the catch always lands on "error".
 	out.stop_reason = "error".to_string();
@@ -222,273 +192,389 @@ fn catch(out: &mut Output, events: &mut Vec<JsVal>, message: String) {
 	]));
 }
 
-/// Decode ordered Anthropic SSE byte chunks into the normalized transcript JsVal.
-pub fn decode_anthropic(chunks: &[Vec<u8>], api: &str, provider: &str, model: &str) -> JsVal {
-	let sse = parse_sse(chunks);
-	let mut out = Output::new(api, provider, model);
+/// Assemble ONE parsed Anthropic stream event into the output, returning the AssistantMessageEvents
+/// produced. The `Option<String>` is the "unhandled stop reason" runtime error: when `Some`, it
+/// halts all further assembly (the former `break 'assembly`) and is routed to the catch path by the
+/// caller. The match arms are the verbatim former assembly loop body.
+fn assemble_event(out: &mut Output, ev: &Value) -> (Vec<JsVal>, Option<String>) {
 	let mut events: Vec<JsVal> = Vec::new();
-
-	// stream.push({ type: "start", partial: output })
-	events.push(js_obj(vec![("type", js_str("start")), ("snapshot", out.content_snapshot())]));
-
-	let (yielded, iterate_error) = iterate_anthropic_events(&sse);
-	let mut runtime_error: Option<String> = None;
-
-	'assembly: for ev in &yielded {
-		match ev["type"].as_str().unwrap_or("") {
-			"message_start" => {
-				out.response_id = ev["message"]["id"].as_str().map(|s| s.to_string());
-				let usage = &ev["message"]["usage"];
-				out.u_input = jint(&usage["input_tokens"]);
-				out.u_output = jint(&usage["output_tokens"]);
-				out.u_cache_read = jint(&usage["cache_read_input_tokens"]);
-				out.u_cache_write = jint(&usage["cache_creation_input_tokens"]);
-				out.u_cache_write_1h = Some(jint(&usage["cache_creation"]["ephemeral_1h_input_tokens"]));
-				out.u_total = out.u_input + out.u_output + out.u_cache_read + out.u_cache_write;
-			}
-			"content_block_start" => {
-				let index = jint(&ev["index"]);
-				let cb = &ev["content_block"];
-				match cb["type"].as_str().unwrap_or("") {
-					"text" => {
-						out.content.push(Block {
-							index,
-							kind: Kind::Text,
-							text: String::new(),
-							thinking: String::new(),
-							thinking_signature: String::new(),
-							redacted: false,
-							id: String::new(),
-							name: String::new(),
-							partial_json: String::new(),
-							arguments: JsVal::Obj(Vec::new()),
-						});
-						let ci = out.content.len() - 1;
-						events.push(js_obj(vec![
-							("type", js_str("text_start")),
-							("contentIndex", js_num(ci as i64)),
-							("snapshot", out.content_snapshot()),
-						]));
-					}
-					"thinking" => {
-						out.content.push(Block {
-							index,
-							kind: Kind::Thinking,
-							text: String::new(),
-							thinking: String::new(),
-							thinking_signature: String::new(),
-							redacted: false,
-							id: String::new(),
-							name: String::new(),
-							partial_json: String::new(),
-							arguments: JsVal::Obj(Vec::new()),
-						});
-						let ci = out.content.len() - 1;
-						events.push(js_obj(vec![
-							("type", js_str("thinking_start")),
-							("contentIndex", js_num(ci as i64)),
-							("snapshot", out.content_snapshot()),
-						]));
-					}
-					"redacted_thinking" => {
-						out.content.push(Block {
-							index,
-							kind: Kind::Thinking,
-							text: String::new(),
-							thinking: "[Reasoning redacted]".to_string(),
-							thinking_signature: cb["data"].as_str().unwrap_or("").to_string(),
-							redacted: true,
-							id: String::new(),
-							name: String::new(),
-							partial_json: String::new(),
-							arguments: JsVal::Obj(Vec::new()),
-						});
-						let ci = out.content.len() - 1;
-						events.push(js_obj(vec![
-							("type", js_str("thinking_start")),
-							("contentIndex", js_num(ci as i64)),
-							("snapshot", out.content_snapshot()),
-						]));
-					}
-					"tool_use" => {
-						let input_v = &cb["input"];
-						let arguments = if input_v.is_null() {
-							JsVal::Obj(Vec::new())
-						} else {
-							value_to_jsval(input_v)
-						};
-						out.content.push(Block {
-							index,
-							kind: Kind::ToolCall,
-							text: String::new(),
-							thinking: String::new(),
-							thinking_signature: String::new(),
-							redacted: false,
-							id: cb["id"].as_str().unwrap_or("").to_string(),
-							name: cb["name"].as_str().unwrap_or("").to_string(),
-							partial_json: String::new(),
-							arguments,
-						});
-						let ci = out.content.len() - 1;
-						events.push(js_obj(vec![
-							("type", js_str("toolcall_start")),
-							("contentIndex", js_num(ci as i64)),
-							("snapshot", out.content_snapshot()),
-						]));
-					}
-					_ => {}
+	match ev["type"].as_str().unwrap_or("") {
+		"message_start" => {
+			out.response_id = ev["message"]["id"].as_str().map(|s| s.to_string());
+			let usage = &ev["message"]["usage"];
+			out.u_input = jint(&usage["input_tokens"]);
+			out.u_output = jint(&usage["output_tokens"]);
+			out.u_cache_read = jint(&usage["cache_read_input_tokens"]);
+			out.u_cache_write = jint(&usage["cache_creation_input_tokens"]);
+			out.u_cache_write_1h = Some(jint(&usage["cache_creation"]["ephemeral_1h_input_tokens"]));
+			out.u_total = out.u_input + out.u_output + out.u_cache_read + out.u_cache_write;
+		}
+		"content_block_start" => {
+			let index = jint(&ev["index"]);
+			let cb = &ev["content_block"];
+			match cb["type"].as_str().unwrap_or("") {
+				"text" => {
+					out.content.push(Block {
+						index,
+						kind: Kind::Text,
+						text: String::new(),
+						thinking: String::new(),
+						thinking_signature: String::new(),
+						redacted: false,
+						id: String::new(),
+						name: String::new(),
+						partial_json: String::new(),
+						arguments: JsVal::Obj(Vec::new()),
+					});
+					let ci = out.content.len() - 1;
+					events.push(js_obj(vec![
+						("type", js_str("text_start")),
+						("contentIndex", js_num(ci as i64)),
+						("snapshot", out.content_snapshot()),
+					]));
 				}
-			}
-			"content_block_delta" => {
-				let index = jint(&ev["index"]);
-				let delta = &ev["delta"];
-				let bi = out.find(index);
-				match delta["type"].as_str().unwrap_or("") {
-					"text_delta" => {
-						if let Some(i) = bi {
-							if out.content[i].kind == Kind::Text {
-								let d = delta["text"].as_str().unwrap_or("").to_string();
-								out.content[i].text.push_str(&d);
-								events.push(js_obj(vec![
-									("type", js_str("text_delta")),
-									("contentIndex", js_num(i as i64)),
-									("delta", js_str(&d)),
-									("snapshot", out.content_snapshot()),
-								]));
-							}
-						}
-					}
-					"thinking_delta" => {
-						if let Some(i) = bi {
-							if out.content[i].kind == Kind::Thinking {
-								let d = delta["thinking"].as_str().unwrap_or("").to_string();
-								out.content[i].thinking.push_str(&d);
-								events.push(js_obj(vec![
-									("type", js_str("thinking_delta")),
-									("contentIndex", js_num(i as i64)),
-									("delta", js_str(&d)),
-									("snapshot", out.content_snapshot()),
-								]));
-							}
-						}
-					}
-					"input_json_delta" => {
-						if let Some(i) = bi {
-							if out.content[i].kind == Kind::ToolCall {
-								let d = delta["partial_json"].as_str().unwrap_or("").to_string();
-								out.content[i].partial_json.push_str(&d);
-								let parsed = parse_streaming_json(&out.content[i].partial_json);
-								out.content[i].arguments = parsed;
-								events.push(js_obj(vec![
-									("type", js_str("toolcall_delta")),
-									("contentIndex", js_num(i as i64)),
-									("delta", js_str(&d)),
-									("snapshot", out.content_snapshot()),
-								]));
-							}
-						}
-					}
-					"signature_delta" => {
-						if let Some(i) = bi {
-							if out.content[i].kind == Kind::Thinking {
-								let sig = delta["signature"].as_str().unwrap_or("");
-								out.content[i].thinking_signature.push_str(sig);
-							}
-						}
-					}
-					_ => {}
+				"thinking" => {
+					out.content.push(Block {
+						index,
+						kind: Kind::Thinking,
+						text: String::new(),
+						thinking: String::new(),
+						thinking_signature: String::new(),
+						redacted: false,
+						id: String::new(),
+						name: String::new(),
+						partial_json: String::new(),
+						arguments: JsVal::Obj(Vec::new()),
+					});
+					let ci = out.content.len() - 1;
+					events.push(js_obj(vec![
+						("type", js_str("thinking_start")),
+						("contentIndex", js_num(ci as i64)),
+						("snapshot", out.content_snapshot()),
+					]));
 				}
+				"redacted_thinking" => {
+					out.content.push(Block {
+						index,
+						kind: Kind::Thinking,
+						text: String::new(),
+						thinking: "[Reasoning redacted]".to_string(),
+						thinking_signature: cb["data"].as_str().unwrap_or("").to_string(),
+						redacted: true,
+						id: String::new(),
+						name: String::new(),
+						partial_json: String::new(),
+						arguments: JsVal::Obj(Vec::new()),
+					});
+					let ci = out.content.len() - 1;
+					events.push(js_obj(vec![
+						("type", js_str("thinking_start")),
+						("contentIndex", js_num(ci as i64)),
+						("snapshot", out.content_snapshot()),
+					]));
+				}
+				"tool_use" => {
+					let input_v = &cb["input"];
+					let arguments = if input_v.is_null() {
+						JsVal::Obj(Vec::new())
+					} else {
+						value_to_jsval(input_v)
+					};
+					out.content.push(Block {
+						index,
+						kind: Kind::ToolCall,
+						text: String::new(),
+						thinking: String::new(),
+						thinking_signature: String::new(),
+						redacted: false,
+						id: cb["id"].as_str().unwrap_or("").to_string(),
+						name: cb["name"].as_str().unwrap_or("").to_string(),
+						partial_json: String::new(),
+						arguments,
+					});
+					let ci = out.content.len() - 1;
+					events.push(js_obj(vec![
+						("type", js_str("toolcall_start")),
+						("contentIndex", js_num(ci as i64)),
+						("snapshot", out.content_snapshot()),
+					]));
+				}
+				_ => {}
 			}
-			"content_block_stop" => {
-				let index = jint(&ev["index"]);
-				if let Some(i) = out.find(index) {
-					match out.content[i].kind {
-						Kind::Text => {
-							let content = out.content[i].text.clone();
+		}
+		"content_block_delta" => {
+			let index = jint(&ev["index"]);
+			let delta = &ev["delta"];
+			let bi = out.find(index);
+			match delta["type"].as_str().unwrap_or("") {
+				"text_delta" => {
+					if let Some(i) = bi {
+						if out.content[i].kind == Kind::Text {
+							let d = delta["text"].as_str().unwrap_or("").to_string();
+							out.content[i].text.push_str(&d);
 							events.push(js_obj(vec![
-								("type", js_str("text_end")),
+								("type", js_str("text_delta")),
 								("contentIndex", js_num(i as i64)),
-								("content", js_str(&content)),
+								("delta", js_str(&d)),
 								("snapshot", out.content_snapshot()),
 							]));
 						}
-						Kind::Thinking => {
-							let content = out.content[i].thinking.clone();
+					}
+				}
+				"thinking_delta" => {
+					if let Some(i) = bi {
+						if out.content[i].kind == Kind::Thinking {
+							let d = delta["thinking"].as_str().unwrap_or("").to_string();
+							out.content[i].thinking.push_str(&d);
 							events.push(js_obj(vec![
-								("type", js_str("thinking_end")),
+								("type", js_str("thinking_delta")),
 								("contentIndex", js_num(i as i64)),
-								("content", js_str(&content)),
+								("delta", js_str(&d)),
 								("snapshot", out.content_snapshot()),
 							]));
 						}
-						Kind::ToolCall => {
+					}
+				}
+				"input_json_delta" => {
+					if let Some(i) = bi {
+						if out.content[i].kind == Kind::ToolCall {
+							let d = delta["partial_json"].as_str().unwrap_or("").to_string();
+							out.content[i].partial_json.push_str(&d);
 							let parsed = parse_streaming_json(&out.content[i].partial_json);
 							out.content[i].arguments = parsed;
 							events.push(js_obj(vec![
-								("type", js_str("toolcall_end")),
+								("type", js_str("toolcall_delta")),
 								("contentIndex", js_num(i as i64)),
+								("delta", js_str(&d)),
 								("snapshot", out.content_snapshot()),
 							]));
 						}
 					}
 				}
-			}
-			"message_delta" => {
-				if let Some(reason) = ev["delta"]["stop_reason"].as_str() {
-					match map_stop_reason(reason, &ev["delta"]["stop_details"]) {
-						Ok((stop, err)) => {
-							out.stop_reason = stop;
-							if let Some(m) = err {
-								out.error_message = Some(m);
-							}
-						}
-						Err(msg) => {
-							runtime_error = Some(msg);
-							break 'assembly;
+				"signature_delta" => {
+					if let Some(i) = bi {
+						if out.content[i].kind == Kind::Thinking {
+							let sig = delta["signature"].as_str().unwrap_or("");
+							out.content[i].thinking_signature.push_str(sig);
 						}
 					}
 				}
-				let usage = &ev["usage"];
-				if let Some(n) = usage["input_tokens"].as_i64() {
-					out.u_input = n;
-				}
-				if let Some(n) = usage["output_tokens"].as_i64() {
-					out.u_output = n;
-				}
-				if let Some(n) = usage["cache_read_input_tokens"].as_i64() {
-					out.u_cache_read = n;
-				}
-				if let Some(n) = usage["cache_creation_input_tokens"].as_i64() {
-					out.u_cache_write = n;
-				}
-				if let Some(n) = usage["output_tokens_details"]["thinking_tokens"].as_i64() {
-					out.u_reasoning = Some(n);
-				}
-				out.u_total = out.u_input + out.u_output + out.u_cache_read + out.u_cache_write;
+				_ => {}
 			}
+		}
+		"content_block_stop" => {
+			let index = jint(&ev["index"]);
+			if let Some(i) = out.find(index) {
+				match out.content[i].kind {
+					Kind::Text => {
+						let content = out.content[i].text.clone();
+						events.push(js_obj(vec![
+							("type", js_str("text_end")),
+							("contentIndex", js_num(i as i64)),
+							("content", js_str(&content)),
+							("snapshot", out.content_snapshot()),
+						]));
+					}
+					Kind::Thinking => {
+						let content = out.content[i].thinking.clone();
+						events.push(js_obj(vec![
+							("type", js_str("thinking_end")),
+							("contentIndex", js_num(i as i64)),
+							("content", js_str(&content)),
+							("snapshot", out.content_snapshot()),
+						]));
+					}
+					Kind::ToolCall => {
+						let parsed = parse_streaming_json(&out.content[i].partial_json);
+						out.content[i].arguments = parsed;
+						events.push(js_obj(vec![
+							("type", js_str("toolcall_end")),
+							("contentIndex", js_num(i as i64)),
+							("snapshot", out.content_snapshot()),
+						]));
+					}
+				}
+			}
+		}
+		"message_delta" => {
+			if let Some(reason) = ev["delta"]["stop_reason"].as_str() {
+				match map_stop_reason(reason, &ev["delta"]["stop_details"]) {
+					Ok((stop, err)) => {
+						out.stop_reason = stop;
+						if let Some(m) = err {
+							out.error_message = Some(m);
+						}
+					}
+					Err(msg) => {
+						// Former `break 'assembly`: halt all further assembly, skip usage updates.
+						return (events, Some(msg));
+					}
+				}
+			}
+			let usage = &ev["usage"];
+			if let Some(n) = usage["input_tokens"].as_i64() {
+				out.u_input = n;
+			}
+			if let Some(n) = usage["output_tokens"].as_i64() {
+				out.u_output = n;
+			}
+			if let Some(n) = usage["cache_read_input_tokens"].as_i64() {
+				out.u_cache_read = n;
+			}
+			if let Some(n) = usage["cache_creation_input_tokens"].as_i64() {
+				out.u_cache_write = n;
+			}
+			if let Some(n) = usage["output_tokens_details"]["thinking_tokens"].as_i64() {
+				out.u_reasoning = Some(n);
+			}
+			out.u_total = out.u_input + out.u_output + out.u_cache_read + out.u_cache_write;
+		}
+		_ => {}
+	}
+	(events, None)
+}
+
+/// Stateful Anthropic decoder: the streaming core (the incremental/async-iterable boundary). A
+/// caller feeds byte chunks one at a time via `push` and drains terminals via `finish`. The
+/// one-shot `decode_anthropic` is re-expressed on top of it, so the unchanged 13-row conformance
+/// gate proves the streaming split is byte-identical.
+pub struct AnthropicStreamDecoder {
+	framer: SseFramer,
+	out: Output,
+	started: bool,
+	saw_start: bool,
+	saw_end: bool,
+	// event:error / parse-fail, deferred to finish (former iterate_anthropic_events early-return).
+	terminal: Option<String>,
+	// unhandled stop reason (former `break 'assembly`); takes precedence over `terminal`.
+	runtime_error: Option<String>,
+}
+
+impl AnthropicStreamDecoder {
+	pub fn new(api: &str, provider: &str, model: &str) -> Self {
+		AnthropicStreamDecoder {
+			framer: SseFramer::new(),
+			out: Output::new(api, provider, model),
+			started: false,
+			saw_start: false,
+			saw_end: false,
+			terminal: None,
+			runtime_error: None,
+		}
+	}
+
+	/// Emit the single `start` event once (empty-content snapshot, the former pre-loop push).
+	/// Idempotent: returns `[]` if already started.
+	pub fn take_start(&mut self) -> Vec<JsVal> {
+		if self.started {
+			return Vec::new();
+		}
+		self.started = true;
+		vec![js_obj(vec![("type", js_str("start")), ("snapshot", self.out.content_snapshot())])]
+	}
+
+	/// One streaming pass replacing iterate_anthropic_events (pass 1) + the `'assembly` loop (pass 2).
+	fn ingest_sse_event(&mut self, e: &ServerSentEvent) -> Vec<JsVal> {
+		// Drop everything after a terminal latches — faithful to BOTH the former early-return
+		// (event:error / parse-fail) AND the former `break 'assembly` (runtime_error).
+		if self.terminal.is_some() || self.runtime_error.is_some() {
+			return Vec::new();
+		}
+		if e.event.as_deref() == Some("error") {
+			self.terminal = Some(e.data.clone());
+			return Vec::new();
+		}
+		let name = e.event.clone().unwrap_or_default();
+		if !MESSAGE_EVENTS.contains(&name.as_str()) {
+			return Vec::new();
+		}
+		let ev = match parse_with_repair_value(&e.data) {
+			Ok(v) => v,
+			Err(()) => {
+				// V8-derived parse error; normalize to a structural sentinel (corpus avoids this path).
+				self.terminal = Some(format!("Could not parse Anthropic SSE event {name}"));
+				return Vec::new();
+			}
+		};
+		match ev["type"].as_str() {
+			Some("message_start") => self.saw_start = true,
+			Some("message_stop") => self.saw_end = true,
 			_ => {}
 		}
+		let (events, rt) = assemble_event(&mut self.out, &ev);
+		if rt.is_some() {
+			self.runtime_error = rt;
+		}
+		events
 	}
 
-	let terminal = if runtime_error.is_some() { runtime_error } else { iterate_error };
-	match terminal {
-		Some(msg) => catch(&mut out, &mut events, msg),
-		None => {
-			if out.stop_reason == "error" || out.stop_reason == "aborted" {
-				let msg = out
-					.error_message
-					.clone()
-					.unwrap_or_else(|| "An unknown error occurred".to_string());
-				catch(&mut out, &mut events, msg);
-			} else {
-				events.push(js_obj(vec![
-					("type", js_str("done")),
-					("reason", js_str(&out.stop_reason)),
-					("snapshot", out.content_snapshot()),
-				]));
+	/// Feed one byte chunk; returns the AssistantMessageEvents produced by it (the `start` event is
+	/// folded in on the first push so it always surfaces even without an explicit `take_start`).
+	/// NEVER emits the terminal done/error — that is `finish`'s job.
+	pub fn push(&mut self, chunk: &[u8]) -> Vec<JsVal> {
+		let mut events = self.take_start();
+		for sse in self.framer.push(chunk) {
+			events.extend(self.ingest_sse_event(&sse));
+		}
+		events
+	}
+
+	/// End-of-stream: drain the framer's trailing buffer (so an EOF-terminated event is assembled
+	/// before `saw_end` is read), then emit the terminal done/error in the former post-loop order.
+	pub fn finish(&mut self) -> Vec<JsVal> {
+		let mut events = self.take_start();
+		for sse in self.framer.flush() {
+			events.extend(self.ingest_sse_event(&sse));
+		}
+		// Precedence (former: runtime_error else iterate_error, where iterate_error already shadowed
+		// the ended-before-stop check via early-return): runtime_error > terminal > ended-before-stop.
+		let terminal = self
+			.runtime_error
+			.take()
+			.or_else(|| self.terminal.take())
+			.or_else(|| {
+				if self.saw_start && !self.saw_end {
+					Some("Anthropic stream ended before message_stop".to_string())
+				} else {
+					None
+				}
+			});
+		match terminal {
+			Some(msg) => catch(&mut self.out, &mut events, msg),
+			None => {
+				if self.out.stop_reason == "error" || self.out.stop_reason == "aborted" {
+					let msg = self
+						.out
+						.error_message
+						.clone()
+						.unwrap_or_else(|| "An unknown error occurred".to_string());
+					catch(&mut self.out, &mut events, msg);
+				} else {
+					events.push(js_obj(vec![
+						("type", js_str("done")),
+						("reason", js_str(&self.out.stop_reason)),
+						("snapshot", self.out.content_snapshot()),
+					]));
+				}
 			}
 		}
+		events
 	}
 
-	js_obj(vec![("events", JsVal::Arr(events)), ("final", out.snapshot())])
+	/// The fully-settled final message (usage / stopReason / errorMessage). Gated in full.
+	pub fn final_message(&self) -> JsVal {
+		self.out.snapshot()
+	}
+}
+
+/// Decode ordered Anthropic SSE byte chunks into the normalized transcript JsVal (one-shot,
+/// re-expressed on the stateful core — the unchanged 13-row gate proves this is byte-identical).
+pub fn decode_anthropic(chunks: &[Vec<u8>], api: &str, provider: &str, model: &str) -> JsVal {
+	let mut d = AnthropicStreamDecoder::new(api, provider, model);
+	let mut events = d.take_start();
+	for c in chunks {
+		events.extend(d.push(c));
+	}
+	events.extend(d.finish());
+	js_obj(vec![("events", JsVal::Arr(events)), ("final", d.final_message())])
 }

@@ -76,11 +76,31 @@ for (const row of openai) {
 		console.error(`  BEHAVIORAL DRIFT  openai '${row.name}'`);
 	}
 }
+// Increment 5: the incremental (stateful) Anthropic decoder under all three feeding schedules.
+const schedules = ["oneshot", "recorded", "byte"];
+for (const row of anthropic) {
+	for (const sched of schedules) {
+		const got = fresh.decode_anthropic_incremental_canonical(
+			JSON.stringify(row.chunks),
+			sched,
+			row.api,
+			row.provider,
+			row.model,
+		);
+		if (got !== row.expected) {
+			drift++;
+			console.error(`  BEHAVIORAL DRIFT  anthropic '${row.name}' [incremental ${sched}]`);
+		}
+	}
+}
 if (drift > 0) {
 	console.error(`[gate:wasm:check] ${drift} row(s) drifted: a freshly built wasm disagrees with the goldens.`);
 	process.exit(1);
 }
-console.log(`[gate:wasm:check] behavioral: freshly built wasm reproduces all ${anthropic.length + openai.length} goldens ✓`);
+console.log(
+	`[gate:wasm:check] behavioral: freshly built wasm reproduces all ${anthropic.length + openai.length} one-shot ` +
+		`+ ${anthropic.length * schedules.length} incremental goldens ✓`,
+);
 
 if (wantBytes) {
 	let byteDiffs = 0;

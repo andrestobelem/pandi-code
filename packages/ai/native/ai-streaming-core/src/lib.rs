@@ -15,6 +15,6 @@ pub mod sse;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-pub use anthropic::decode_anthropic;
+pub use anthropic::{decode_anthropic, AnthropicStreamDecoder};
 pub use openai::decode_openai;
-pub use partial_json::{canonical, parse_streaming_json, JsVal};
+pub use partial_json::{canonical, js_obj, parse_streaming_json, JsVal};

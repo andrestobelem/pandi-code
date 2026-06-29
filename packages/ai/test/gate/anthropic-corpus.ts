@@ -150,6 +150,61 @@ const thinkingEvents = [
 	{ event: "message_stop", data: j({ type: "message_stop" }) },
 ];
 
+// Multibyte UTF-8 (2-byte é, 3-byte ☕ and CJK, 4-byte emoji). Under the gate's byte-at-a-time
+// feeding schedule every codepoint is split mid-sequence, forcing the incremental UTF-8 decoder
+// (Utf8Stream.pending) to carry incomplete byte sequences across pushes — coverage the one-shot
+// path (and re-feeding the recorded chunks) cannot reach.
+const multibyteEvents = [
+	{ event: "message_start", data: j({ type: "message_start", message: { id: "msg_mb", usage: usage0 } }) },
+	{
+		event: "content_block_start",
+		data: j({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+	},
+	{
+		event: "content_block_delta",
+		data: j({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "café ☕ " } }),
+	},
+	{
+		event: "content_block_delta",
+		data: j({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "日本語 🌍🎉" } }),
+	},
+	{ event: "content_block_stop", data: j({ type: "content_block_stop", index: 0 }) },
+	{
+		event: "message_delta",
+		data: j({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: usageFinal }),
+	},
+	{ event: "message_stop", data: j({ type: "message_stop" }) },
+];
+
+// Unhandled stop reason: mapStopReason throws `Unhandled stop reason: banana`, which the decoder
+// routes to the error/catch path. The content block AFTER the bad message_delta MUST be suppressed
+// (the streaming decoder's terminal latch == the former `break 'assembly`); the open text block
+// "Partial" is kept, "DROPPED" must never appear.
+const unhandledStopEvents = [
+	{ event: "message_start", data: j({ type: "message_start", message: { id: "msg_unh", usage: usage0 } }) },
+	{
+		event: "content_block_start",
+		data: j({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+	},
+	{
+		event: "content_block_delta",
+		data: j({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Partial" } }),
+	},
+	{
+		event: "message_delta",
+		data: j({ type: "message_delta", delta: { stop_reason: "banana" }, usage: usageFinal }),
+	},
+	{
+		event: "content_block_start",
+		data: j({ type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+	},
+	{
+		event: "content_block_delta",
+		data: j({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "DROPPED" } }),
+	},
+	{ event: "message_stop", data: j({ type: "message_stop" }) },
+];
+
 const helloWire = wire(helloEvents);
 
 // Split a string into n roughly-equal pieces (mid-line / mid-event splits stress the framer).
@@ -179,4 +234,6 @@ export const fixtures: AnthropicFixture[] = [
 	{ name: "comment-and-heartbeat-lines", chunks: [`:heartbeat\n${helloWire}`] },
 	{ name: "ended-before-message-stop", chunks: [wire(helloEvents.slice(0, 5))] },
 	{ name: "event-error-midstream", chunks: [wire([helloEvents[0]]) + "\nevent: error\ndata: upstream exploded\n"] },
+	{ name: "multibyte-text-emoji-cjk", chunks: [wire(multibyteEvents)] },
+	{ name: "unhandled-stop-reason", chunks: [wire(unhandledStopEvents)] },
 ];
