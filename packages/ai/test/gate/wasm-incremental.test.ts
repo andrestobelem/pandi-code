@@ -60,7 +60,7 @@ let rowsAsserted = 0;
 
 describe("wasm incremental FFI gate (stateful streaming decoder across the boundary)", () => {
 	it("covers the full committed anthropic corpus (no silent truncation)", () => {
-		expect(anthropicGolden.length).toBe(15);
+		expect(anthropicGolden.length).toBe(17);
 	});
 
 	for (const row of anthropicGolden) {
@@ -104,7 +104,7 @@ describe("wasm incremental FFI gate (stateful streaming decoder across the bound
 		});
 	}
 
-	it("asserted exactly 60 rows (15 × 3 convenience + 15 class)", () => {
-		expect(rowsAsserted).toBe(60);
+	it("asserted exactly 68 rows (17 × 3 convenience + 17 class)", () => {
+		expect(rowsAsserted).toBe(68);
 	});
 });

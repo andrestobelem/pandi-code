@@ -1,7 +1,7 @@
 # WASM FFI integration gate (Increment 4)
 
 This crate's pure decoders (`decode_anthropic`, `decode_openai`, `canonical`) are validated
-**in-process** by the native conformance tests (`cargo test --features gate`, the 13 anthropic +
+**in-process** by the native conformance tests (`cargo test --features gate`, the 17 anthropic +
 38 openai + partial-json golden rows). Increment 4 re-asserts the **same equality** with the
 **same decoders** and the **same goldens**, but routed through a real **JS ↔ Rust wasm-bindgen
 boundary**. If the wasm transcript still matches the golden, the boundary marshalling is faithful.
@@ -70,7 +70,7 @@ two-step CLI does not emit one, so it is preserved.
 The committed wasm is generated once on a dev box; CI cannot rebuild it. So:
 
 **Caught by the CI vitest gate:** a committed wasm whose decode logic disagrees with any golden
-row, and coverage drift (rows asserted ≠ 51 / corpus truncation).
+row, and coverage drift (rows asserted ≠ 55 / corpus truncation).
 
 **NOT caught:**
 
@@ -85,7 +85,7 @@ that touches `native/ai-streaming-core/src/` — mirroring the existing "commit 
 together" rule for the golden generators.
 
 **`npm run gate:wasm:check`** (local-only; needs the toolchain) rebuilds into a temp dir and re-runs
-all 51 goldens through the freshly built wasm (behavioral re-equivalence — the trustworthy signal).
+all 55 goldens through the freshly built wasm (behavioral re-equivalence — the trustworthy signal).
 `-- --bytes` additionally byte-compares against the committed files, but wasm-bindgen output is not
 bit-reproducible across toolchain versions/machines, so `--bytes` is meaningful only same-box /
 same-toolchain and must never be a hard cross-machine gate.
@@ -141,6 +141,15 @@ all further events are dropped — faithful to the former `iterate_anthropic_eve
 prior corpus was 100% ASCII with no unhandled-stop case: `multibyte-text-emoji-cjk` (2/3/4-byte UTF-8;
 exercises `Utf8Stream.pending` under the `byte` schedule) and `unhandled-stop-reason` (drives the
 `runtime_error` path and proves post-terminal content is suppressed).
+
+**Corpus harvest (15→17).** A dedicated pass over the original anthropic SSE tests harvested two more
+genuinely-new decoder dimensions the prior corpus missed: `cache-write-1h-breakdown` (non-zero
+`usage.cacheWrite` plus `usage.cacheWrite1h` from `message_start`'s `cache_creation.ephemeral_1h_input_tokens`
+— every other fixture pins both to 0) and `thinking-empty-signature` (a thinking block that receives no
+`signature_delta`, settling with `thinkingSignature:""` — the existing thinking fixture settles at
+`"sig-abc"`). The Rust decoder already ported both fields, so `gate:rust` reproduced all 17 with no
+`src/` change (the gate confirming the port was faithful, not flagging a gap). Counts above are now 17
+anthropic + 38 openai = 55 one-shot (+ 17×3 incremental).
 
 **Still gate-only.** Forward-looking, NOT implemented: a production `PI_RUST_STREAMING` adapter would,
 in `anthropic-messages.ts` `stream()`, replace the `iterateSseMessages` / `iterateAnthropicEvents`

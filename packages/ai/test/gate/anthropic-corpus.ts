@@ -205,6 +205,75 @@ const unhandledStopEvents = [
 	{ event: "message_stop", data: j({ type: "message_stop" }) },
 ];
 
+// Cache-creation usage with a 1h breakdown. message_start carries cache_creation_input_tokens (the
+// total) plus cache_creation.ephemeral_1h_input_tokens (the 1h split); the decoder copies these to
+// usage.cacheWrite and usage.cacheWrite1h (anthropic-messages.ts ~L554-555). Every other fixture pins
+// cacheWrite:0 / cacheWrite1h:0, so this is the only non-zero settled cache-usage coverage in the gate.
+const cacheWrite1hUsage0 = {
+	input_tokens: 100,
+	output_tokens: 0,
+	cache_read_input_tokens: 0,
+	cache_creation_input_tokens: 1000000,
+	cache_creation: { ephemeral_5m_input_tokens: 600000, ephemeral_1h_input_tokens: 400000 },
+};
+const cacheWrite1hUsageFinal = {
+	input_tokens: 100,
+	output_tokens: 5,
+	cache_read_input_tokens: 0,
+	cache_creation_input_tokens: 1000000,
+};
+const cacheWrite1hEvents = [
+	{
+		event: "message_start",
+		data: j({ type: "message_start", message: { id: "msg_cache1h", usage: cacheWrite1hUsage0 } }),
+	},
+	{
+		event: "content_block_start",
+		data: j({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+	},
+	{
+		event: "content_block_delta",
+		data: j({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } }),
+	},
+	{ event: "content_block_stop", data: j({ type: "content_block_stop", index: 0 }) },
+	{
+		event: "message_delta",
+		data: j({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: cacheWrite1hUsageFinal }),
+	},
+	{ event: "message_stop", data: j({ type: "message_stop" }) },
+];
+
+// Thinking block that receives a thinking_delta but NO signature_delta, so it settles with the
+// initialized empty-string signature (thinkingSignature:"" — anthropic-messages.ts ~L573, mutated only
+// inside the signature_delta branch). The existing thinking fixture settles at "sig-abc"; "" appears
+// only in transient pre-signature snapshots there, never at thinking_end or in final.content.
+const emptySignatureThinkingEvents = [
+	{ event: "message_start", data: j({ type: "message_start", message: { id: "msg_emptysig", usage: usage0 } }) },
+	{
+		event: "content_block_start",
+		data: j({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } }),
+	},
+	{
+		event: "content_block_delta",
+		data: j({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Let me think" } }),
+	},
+	{ event: "content_block_stop", data: j({ type: "content_block_stop", index: 0 }) },
+	{
+		event: "content_block_start",
+		data: j({ type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+	},
+	{
+		event: "content_block_delta",
+		data: j({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Answer" } }),
+	},
+	{ event: "content_block_stop", data: j({ type: "content_block_stop", index: 1 }) },
+	{
+		event: "message_delta",
+		data: j({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: usageFinal }),
+	},
+	{ event: "message_stop", data: j({ type: "message_stop" }) },
+];
+
 const helloWire = wire(helloEvents);
 
 // Split a string into n roughly-equal pieces (mid-line / mid-event splits stress the framer).
@@ -236,4 +305,6 @@ export const fixtures: AnthropicFixture[] = [
 	{ name: "event-error-midstream", chunks: [wire([helloEvents[0]]) + "\nevent: error\ndata: upstream exploded\n"] },
 	{ name: "multibyte-text-emoji-cjk", chunks: [wire(multibyteEvents)] },
 	{ name: "unhandled-stop-reason", chunks: [wire(unhandledStopEvents)] },
+	{ name: "cache-write-1h-breakdown", chunks: [wire(cacheWrite1hEvents)] },
+	{ name: "thinking-empty-signature", chunks: [wire(emptySignatureThinkingEvents)] },
 ];
