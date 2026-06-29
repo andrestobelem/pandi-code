@@ -16,7 +16,8 @@ packages/*/dist-firefox/
 .vscode/
 .zed/
 .idea/
-.claude/
+.claude/*
+!.claude/workflows/
 *.swp
 *.swo
 *~
