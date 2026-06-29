@@ -704,7 +704,18 @@ async function driveRustDecoder(args: {
 			if (signal?.aborted) {
 				throw new Error("Request was aborted"); // keep abort responsive mid-stream; terminal owns the rest
 			}
-			const { value, done } = await reader.read();
+			let value: Uint8Array | undefined;
+			let done: boolean;
+			try {
+				({ value, done } = await reader.read());
+			} catch (e) {
+				// A transport-layer reject (TCP reset / proxy 502 mid-body / premature close) happens
+				// OUTSIDE the decoder — it is NOT an adapter/translation fault. Tag it so the outer catch
+				// does not mis-attribute it to error:"adapter" (which would pollute the rollout signal);
+				// the TS path's equivalent reject is never tagged either.
+				if (e && typeof e === "object") (e as { piTransportError?: boolean }).piTransportError = true;
+				throw e;
+			}
 			if (done) break;
 			if (value) applyEvents(JSON.parse(decoder.push(value)) as CanonicalEvent[]);
 		}
@@ -1106,7 +1117,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			// for a genuine adapter throw — i.e. Rust-served, the drive did NOT complete, and not an abort.
 			// A latched SERVER error (refusal / SSE error frame / ended-before-stop) lets driveRustDecoder
 			// return normally, so rustDriveCompleted is true and it is NOT mis-tagged as an adapter fault.
-			const adapterOrigin = servedBy === "rust" && !rustDriveCompleted && !options?.signal?.aborted;
+			// A transport-layer reject from reader.read() is tagged piTransportError (see driveRustDecoder)
+			// and is likewise NOT an adapter fault — exclude it so on-call's adapter-fault signal stays clean.
+			const transportOrigin =
+				!!error && typeof error === "object" && (error as { piTransportError?: boolean }).piTransportError === true;
+			const adapterOrigin =
+				servedBy === "rust" && !rustDriveCompleted && !options?.signal?.aborted && !transportOrigin;
 			await options?.onPath?.({ path: servedBy, ...(adapterOrigin ? { error: "adapter" as const } : {}) });
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();

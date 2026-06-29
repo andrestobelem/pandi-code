@@ -330,6 +330,34 @@ describe("PI_RUST_STREAMING flag-gate safety properties", () => {
 		expect(onPath).toHaveBeenCalledWith(expect.objectContaining({ path: "rust", error: "adapter" }));
 	});
 
+	it("a mid-stream transport reject is NOT mis-tagged as error:'adapter' (transport != adapter fault)", async () => {
+		// A transport-layer reject (TCP reset / proxy 502 mid-body / premature close) rejects
+		// reader.read() OUTSIDE the decoder, so it is not a Rust adapter/parity fault. It must report
+		// path:"rust" with NO error:"adapter" tag, matching the TS path (whose reject is never tagged).
+		const erroringClient = (() => {
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(new TextEncoder().encode("event: message_start\ndata: {}\n\n"));
+					controller.error(new Error("ECONNRESET"));
+				},
+			});
+			const response = new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+			return { messages: { create: () => ({ asResponse: async () => response }) } } as unknown as Anthropic;
+		})();
+
+		const onPath = vi.fn();
+		const evs = await drain(
+			streamAnthropic(getModel("anthropic", "claude-haiku-4-5"), context, {
+				client: erroringClient,
+				env: { PI_RUST_STREAMING: "1" },
+				onPath,
+			}),
+		);
+		const term = evs[evs.length - 1] as { type: string };
+		expect(term.type).toBe("error"); // still surfaced as a stream error
+		expect(onPath).toHaveBeenCalledWith({ path: "rust" }); // exact object: NO error:"adapter"
+	});
+
 	it("a load failure DOES fall back to the TS path", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 		const off = await drain(streamAnthropic(model, context, { client: fakeClient(golden[0].chunks), env: {} }));
