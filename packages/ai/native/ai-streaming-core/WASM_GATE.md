@@ -1,7 +1,7 @@
 # WASM FFI integration gate (Increment 4)
 
 This crate's pure decoders (`decode_anthropic`, `decode_openai`, `canonical`) are validated
-**in-process** by the native conformance tests (`cargo test --features gate`, the 17 anthropic +
+**in-process** by the native conformance tests (`cargo test --features gate`, the 18 anthropic +
 38 openai + partial-json golden rows). Increment 4 re-asserts the **same equality** with the
 **same decoders** and the **same goldens**, but routed through a real **JS ↔ Rust wasm-bindgen
 boundary**. If the wasm transcript still matches the golden, the boundary marshalling is faithful.
@@ -70,7 +70,7 @@ two-step CLI does not emit one, so it is preserved.
 The committed wasm is generated once on a dev box; CI cannot rebuild it. So:
 
 **Caught by the CI vitest gate:** a committed wasm whose decode logic disagrees with any golden
-row, and coverage drift (rows asserted ≠ 55 / corpus truncation).
+row, and coverage drift (rows asserted ≠ 56 / corpus truncation).
 
 **NOT caught:**
 
@@ -85,7 +85,7 @@ that touches `native/ai-streaming-core/src/` — mirroring the existing "commit 
 together" rule for the golden generators.
 
 **`npm run gate:wasm:check`** (local-only; needs the toolchain) rebuilds into a temp dir and re-runs
-all 55 goldens through the freshly built wasm (behavioral re-equivalence — the trustworthy signal).
+all 56 goldens through the freshly built wasm (behavioral re-equivalence — the trustworthy signal).
 `-- --bytes` additionally byte-compares against the committed files, but wasm-bindgen output is not
 bit-reproducible across toolchain versions/machines, so `--bytes` is meaningful only same-box /
 same-toolchain and must never be a hard cross-machine gate.
@@ -148,8 +148,24 @@ genuinely-new decoder dimensions the prior corpus missed: `cache-write-1h-breakd
 — every other fixture pins both to 0) and `thinking-empty-signature` (a thinking block that receives no
 `signature_delta`, settling with `thinkingSignature:""` — the existing thinking fixture settles at
 `"sig-abc"`). The Rust decoder already ported both fields, so `gate:rust` reproduced all 17 with no
-`src/` change (the gate confirming the port was faithful, not flagging a gap). Counts above are now 17
-anthropic + 38 openai = 55 one-shot (+ 17×3 incremental).
+`src/` change (the gate confirming the port was faithful, not flagging a gap).
+
+**Phase 0 — progressive message-level fields (`message_meta`, corpus 17→18).** Decision A of the
+production-swap design: the decoder now emits two discrete `message_meta` canonical events at the
+byte-deterministic set-points — `phase:"start"` (responseId + initial usage) right after the `start`
+event, and `phase:"delta"` (stopReason + errorMessage-if-any + merged usage) right before the terminal,
+emitted ONLY when the `message_delta` arm completes (so the unhandled-stop / ended-before-stop /
+event:error fixtures carry start-meta only). This closes the mid-stream parity gap the design found: the
+TS path carries usage/responseId/stopReason on every `partial`, but the decoder previously emitted
+nothing at those points. It is gated DIFFERENTIALLY without touching the wire protocol — a GATE-ONLY
+`onMeta` callback on `AnthropicOptions` (same injection category as `client`, undefined in production)
+fires synchronously at the TS set-points, and the replay harness splices the normalized meta events into
+the oracle transcript at the same fixed positions the Rust decoder emits them, so the gate verifies them
+with no consumer-drain timing dependence. `meta_usage()` is the single shared source for both `snapshot`
+and the meta events. The +1 fixture `delta-meta-then-ended-before-stop` locks the gate's independence
+(delta-meta.stopReason `stop` vs final `error`). Counts are now 18 anthropic + 38 openai = 56 one-shot
+(+ 18×3 incremental); the message_meta events live inside each row's transcript and do not change row
+counts. STILL no production wiring (no adapter yet).
 
 **Still gate-only.** Forward-looking, NOT implemented: a production `PI_RUST_STREAMING` adapter would,
 in `anthropic-messages.ts` `stream()`, replace the `iterateSseMessages` / `iterateAnthropicEvents`

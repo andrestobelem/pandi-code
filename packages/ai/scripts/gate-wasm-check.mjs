@@ -3,7 +3,7 @@
 // target + wasm-bindgen, which CI does not have. NOT part of `npm test` or `npm run check`.
 //
 // DEFAULT (behavioral re-equivalence): rebuild the wasm into a temp dir from the CURRENT Rust
-// source and re-run all 55 one-shot golden rows (+ the incremental schedules), asserting each still
+// source and re-run all 56 one-shot golden rows (+ the incremental schedules), asserting each still
 // === expected. This is the trustworthy staleness signal: a freshly-built wasm still reproduces them.
 //
 // `--bytes` (opt-in, same-machine/same-toolchain only): additionally byte-compares each freshly

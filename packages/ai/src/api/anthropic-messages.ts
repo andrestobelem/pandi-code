@@ -240,6 +240,28 @@ export interface AnthropicOptions extends StreamOptions {
 	 * `AnthropicVertex` that shares the same messaging API.
 	 */
 	client?: Anthropic;
+	/**
+	 * GATE-ONLY (differential contract gate). Invoked synchronously at the two byte-deterministic
+	 * message-level set-points (message_start, message_delta) with a value-copied snapshot of exactly
+	 * the fields settled at that point. Undefined in production; same injection category as `client`,
+	 * and NOT part of the AssistantMessageEvent wire protocol. Lets the replay harness be the
+	 * differential oracle for progressive message-level fields without touching the wire events.
+	 */
+	onMeta?: (meta: {
+		phase: "start" | "delta";
+		responseId?: string;
+		stopReason?: string;
+		errorMessage?: string;
+		usage: {
+			input: number;
+			output: number;
+			cacheRead: number;
+			cacheWrite: number;
+			cacheWrite1h?: number;
+			reasoning?: number;
+			totalTokens: number;
+		};
+	}) => void;
 }
 
 function mergeHeaders(...headerSources: (ProviderHeaders | undefined)[]): ProviderHeaders {
@@ -557,6 +579,20 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(model, output.usage);
+					// GATE-ONLY: mirror the Rust decoder's message_meta("start") at this set-point
+					// (responseId + initial usage; reasoning not yet set). No-op in production.
+					options?.onMeta?.({
+						phase: "start",
+						responseId: output.responseId,
+						usage: {
+							input: output.usage.input,
+							output: output.usage.output,
+							cacheRead: output.usage.cacheRead,
+							cacheWrite: output.usage.cacheWrite,
+							cacheWrite1h: output.usage.cacheWrite1h,
+							totalTokens: output.usage.totalTokens,
+						},
+					});
 				} else if (event.type === "content_block_start") {
 					if (event.content_block.type === "text") {
 						const block: Block = {
@@ -711,6 +747,24 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					calculateCost(model, output.usage);
+					// GATE-ONLY: mirror the Rust decoder's message_meta("delta") at this set-point
+					// (stopReason + errorMessage-if-any + merged usage incl. reasoning iff set). This line
+					// is reached only when the message_delta arm completes; mapStopReason throws first for
+					// an unhandled stop reason, so that path emits no delta-meta (matches Rust early-return).
+					options?.onMeta?.({
+						phase: "delta",
+						stopReason: output.stopReason,
+						...(output.errorMessage !== undefined ? { errorMessage: output.errorMessage } : {}),
+						usage: {
+							input: output.usage.input,
+							output: output.usage.output,
+							cacheRead: output.usage.cacheRead,
+							cacheWrite: output.usage.cacheWrite,
+							...(output.usage.cacheWrite1h !== undefined ? { cacheWrite1h: output.usage.cacheWrite1h } : {}),
+							...(output.usage.reasoning !== undefined ? { reasoning: output.usage.reasoning } : {}),
+							totalTokens: output.usage.totalTokens,
+						},
+					});
 				}
 			}
 

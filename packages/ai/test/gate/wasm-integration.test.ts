@@ -52,7 +52,7 @@ let rowsAsserted = 0;
 
 describe("wasm FFI integration gate (decoders crossing the real JS<->Rust boundary)", () => {
 	it("exercises the full committed corpus (no silent truncation)", () => {
-		expect(anthropicGolden.length).toBe(17);
+		expect(anthropicGolden.length).toBe(18);
 		expect(openaiGolden.length).toBe(38);
 	});
 
@@ -79,7 +79,7 @@ describe("wasm FFI integration gate (decoders crossing the real JS<->Rust bounda
 		});
 	}
 
-	it("asserted exactly 55 rows (17 anthropic + 38 openai)", () => {
-		expect(rowsAsserted).toBe(55);
+	it("asserted exactly 56 rows (18 anthropic + 38 openai)", () => {
+		expect(rowsAsserted).toBe(56);
 	});
 });

@@ -307,4 +307,9 @@ export const fixtures: AnthropicFixture[] = [
 	{ name: "unhandled-stop-reason", chunks: [wire(unhandledStopEvents)] },
 	{ name: "cache-write-1h-breakdown", chunks: [wire(cacheWrite1hEvents)] },
 	{ name: "thinking-empty-signature", chunks: [wire(emptySignatureThinkingEvents)] },
+	// message_delta(end_turn) IS reached (so message_meta(delta).stopReason === "stop"), but the stream
+	// ends before message_stop, so the settled final.stopReason === "error" (ended-before-message_stop).
+	// Locks the gate's independence: the progressive delta-meta and the terminal/final are sourced
+	// separately, so a future harness shortcut that derived one from the other would fail here.
+	{ name: "delta-meta-then-ended-before-stop", chunks: [wire(helloEvents.slice(0, 6))] },
 ];

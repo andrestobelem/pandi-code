@@ -124,9 +124,10 @@ impl Output {
 		)
 	}
 
-	fn snapshot(&self) -> JsVal {
-		let content = self.content_snapshot();
-
+	/// The settled usage object — the single source of truth shared by `snapshot` and the progressive
+	/// `message_meta` events, so the two cannot drift. Field include/exclude (cacheWrite1h/reasoning
+	/// present-iff-Some) mirrors the TS oracle's usage construction.
+	fn meta_usage(&self) -> JsVal {
 		let mut usage = vec![
 			("input", js_num(self.u_input)),
 			("output", js_num(self.u_output)),
@@ -140,6 +141,33 @@ impl Output {
 			usage.push(("reasoning", js_num(v)));
 		}
 		usage.push(("totalTokens", js_num(self.u_total)));
+		js_obj(usage)
+	}
+
+	/// Additive, discrete message-level event at the two byte-deterministic set-points (message_start,
+	/// message_delta). NOT a content snapshot: carries only the fields settled at that point (responseId
+	/// at start; stopReason/errorMessage at delta) plus current usage. Gated by TYPE+payload at a fixed
+	/// structural position, sidestepping the consumer-drain timing artifact that keeps content snapshots
+	/// content-only.
+	fn message_meta_event(&self, phase: &str, include_response_id: bool, include_stop: bool) -> JsVal {
+		let mut pairs = vec![("type", js_str("message_meta")), ("phase", js_str(phase))];
+		if include_response_id {
+			if let Some(id) = &self.response_id {
+				pairs.push(("responseId", js_str(id)));
+			}
+		}
+		if include_stop {
+			pairs.push(("stopReason", js_str(&self.stop_reason)));
+			if let Some(e) = &self.error_message {
+				pairs.push(("errorMessage", js_str(e)));
+			}
+		}
+		pairs.push(("usage", self.meta_usage()));
+		js_obj(pairs)
+	}
+
+	fn snapshot(&self) -> JsVal {
+		let content = self.content_snapshot();
 
 		let mut msg = vec![
 			("role", js_str("assistant")),
@@ -151,7 +179,7 @@ impl Output {
 			msg.push(("responseId", js_str(id)));
 		}
 		msg.push(("content", content));
-		msg.push(("usage", js_obj(usage)));
+		msg.push(("usage", self.meta_usage()));
 		msg.push(("stopReason", js_str(&self.stop_reason)));
 		if let Some(e) = &self.error_message {
 			msg.push(("errorMessage", js_str(e)));
@@ -208,6 +236,9 @@ fn assemble_event(out: &mut Output, ev: &Value) -> (Vec<JsVal>, Option<String>) 
 			out.u_cache_write = jint(&usage["cache_creation_input_tokens"]);
 			out.u_cache_write_1h = Some(jint(&usage["cache_creation"]["ephemeral_1h_input_tokens"]));
 			out.u_total = out.u_input + out.u_output + out.u_cache_read + out.u_cache_write;
+			// Progressive message-level fields (responseId + initial usage) as a discrete event at this
+			// deterministic set-point. No stop fields yet (stop_reason still defaults to "stop").
+			events.push(out.message_meta_event("start", true, false));
 		}
 		"content_block_start" => {
 			let index = jint(&ev["index"]);
@@ -428,6 +459,10 @@ fn assemble_event(out: &mut Output, ev: &Value) -> (Vec<JsVal>, Option<String>) 
 				out.u_reasoning = Some(n);
 			}
 			out.u_total = out.u_input + out.u_output + out.u_cache_read + out.u_cache_write;
+			// Progressive message-level fields (stopReason + errorMessage-if-any + merged usage). Placed
+			// AFTER the unhandled-stop early-return (that path emits no delta-meta) and AFTER the usage
+			// recompute (usage fully settled).
+			events.push(out.message_meta_event("delta", false, true));
 		}
 		_ => {}
 	}

@@ -87,6 +87,51 @@ function normEvent(ev: AssistantMessageEvent): Record<string, unknown> {
 	return out;
 }
 
+// The SINGLE TS mirror of the Rust message_meta_event / meta_usage helpers. Field include/exclude
+// (responseId/stopReason/errorMessage, and cacheWrite1h/reasoning present-iff-defined) MUST stay in
+// lockstep with anthropic.rs — this is the differential oracle for the progressive message-level fields.
+function normMeta(m: {
+	phase: "start" | "delta";
+	responseId?: string;
+	stopReason?: string;
+	errorMessage?: string;
+	usage: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		cacheWrite1h?: number;
+		reasoning?: number;
+		totalTokens: number;
+	};
+}): Record<string, unknown> {
+	const out: Record<string, unknown> = { type: "message_meta", phase: m.phase };
+	if (m.responseId !== undefined) {
+		out.responseId = m.responseId;
+	}
+	if (m.stopReason !== undefined) {
+		out.stopReason = m.stopReason;
+	}
+	if (m.errorMessage !== undefined) {
+		out.errorMessage = m.errorMessage;
+	}
+	const usage: Record<string, unknown> = {
+		input: m.usage.input,
+		output: m.usage.output,
+		cacheRead: m.usage.cacheRead,
+		cacheWrite: m.usage.cacheWrite,
+	};
+	if (m.usage.cacheWrite1h !== undefined) {
+		usage.cacheWrite1h = m.usage.cacheWrite1h;
+	}
+	if (m.usage.reasoning !== undefined) {
+		usage.reasoning = m.usage.reasoning;
+	}
+	usage.totalTokens = m.usage.totalTokens;
+	out.usage = usage;
+	return out;
+}
+
 function fakeClient(response: Response): Anthropic {
 	return {
 		messages: { create: () => ({ asResponse: async () => response }) },
@@ -116,17 +161,44 @@ export async function decodeTranscript(byteChunks: number[][]): Promise<{
 	const response = new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 	const context: Context = { messages: [{ role: "user", content: "x", timestamp: 0 }] };
 
-	const stream = streamAnthropic(model, context, { client: fakeClient(response) });
+	// onMeta is the synthesis source for the progressive message_meta events: it fires synchronously in
+	// the producer body at the deterministic set-points, value-copying primitives — so no consumer-drain
+	// race and no harness re-parse of the wire. We capture the normalized records and splice them by
+	// structural position after the drain.
+	const metas: { phase: "start" | "delta"; rec: Record<string, unknown> }[] = [];
+	const stream = streamAnthropic(model, context, {
+		client: fakeClient(response),
+		onMeta: (m) => metas.push({ phase: m.phase, rec: normMeta(m) }),
+	});
 	const events: Record<string, unknown>[] = [];
 	for await (const ev of stream) {
 		events.push(normEvent(ev));
 	}
 	const final = normMessage(await stream.result());
 
+	// Match the Rust decoder's emission order: start-meta immediately after the index-0 `start` event;
+	// delta-meta immediately before the terminal done/error. Fixtures that never reach message_delta
+	// (ended-before-stop, event:error mid-stream, unhandled-stop early-return) produce no delta-meta.
+	const startMeta = metas.find((m) => m.phase === "start");
+	const deltaMeta = metas.find((m) => m.phase === "delta");
+	const splicedEvents: Record<string, unknown>[] = [];
+	let startMetaDone = false;
+	for (const ev of events) {
+		const t = ev.type as string;
+		if ((t === "done" || t === "error") && deltaMeta) {
+			splicedEvents.push(deltaMeta.rec);
+		}
+		splicedEvents.push(ev);
+		if (t === "start" && startMeta && !startMetaDone) {
+			splicedEvents.push(startMeta.rec);
+			startMetaDone = true;
+		}
+	}
+
 	return {
 		api: model.api,
 		provider: model.provider,
 		model: model.id,
-		transcript: { events, final },
+		transcript: { events: splicedEvents, final },
 	};
 }
