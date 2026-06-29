@@ -69,6 +69,32 @@ fn is_hex(u: u16) -> bool {
 	matches!(u, 0x30..=0x39 | 0x41..=0x46 | 0x61..=0x66)
 }
 
+/// Value of one hex UTF-16 unit (assumes is_hex). Used to decode a `\uXXXX` escape's code point.
+fn hex_val(u: u16) -> u16 {
+	match u {
+		0x30..=0x39 => u - 0x30,
+		0x41..=0x46 => u - 0x41 + 10,
+		_ => u - 0x61 + 10,
+	}
+}
+
+/// Decode the 4 hex units of a `\uXXXX` escape into its code unit.
+fn hex4(d: &[u16]) -> u16 {
+	(hex_val(d[0]) << 12) | (hex_val(d[1]) << 8) | (hex_val(d[2]) << 4) | hex_val(d[3])
+}
+
+fn is_high_surrogate(c: u16) -> bool {
+	(0xD800..=0xDBFF).contains(&c)
+}
+fn is_low_surrogate(c: u16) -> bool {
+	(0xDC00..=0xDFFF).contains(&c)
+}
+
+// UTF-16 units of the escape `�` (U+FFFD REPLACEMENT CHARACTER) — what an unpaired surrogate
+// escape is rewritten to so serde_json (which, unlike V8's JSON.parse, rejects lone surrogates) can
+// parse the payload instead of erroring the whole stream / collapsing tool args to {}.
+const REPLACEMENT_ESCAPE: [u16; 6] = [BACKSLASH, U_LOWER, b'f' as u16, b'f' as u16, b'f' as u16, b'd' as u16];
+
 fn is_control(u: u16) -> bool {
 	u <= 0x1f
 }
@@ -122,6 +148,32 @@ fn repair_units(json: &[u16]) -> Vec<u16> {
 					if next == U_LOWER && index + 6 <= n {
 						let digits = &json[index + 2..index + 6];
 						if digits.iter().all(|&d| is_hex(d)) {
+							let code = hex4(digits);
+							// V8's JSON.parse accepts lone surrogate escapes; serde_json rejects them. To
+							// preserve a successful stream (rather than a hard error / empty tool args), keep a
+							// surrogate escape ONLY as part of a valid high+low pair, otherwise rewrite it to the
+							// U+FFFD replacement escape. A residual U+FFFD-vs-lone-surrogate value difference is an
+							// accepted, documented divergence from the TS path.
+							if is_high_surrogate(code) {
+								let paired = index + 12 <= n
+									&& json[index + 6] == BACKSLASH
+									&& json[index + 7] == U_LOWER
+									&& json[index + 8..index + 12].iter().all(|&d| is_hex(d))
+									&& is_low_surrogate(hex4(&json[index + 8..index + 12]));
+								if paired {
+									out.extend_from_slice(&json[index..index + 12]); // valid pair: copy both escapes
+									index += 12;
+									continue;
+								}
+								out.extend_from_slice(&REPLACEMENT_ESCAPE); // unpaired high surrogate
+								index += 6;
+								continue;
+							}
+							if is_low_surrogate(code) {
+								out.extend_from_slice(&REPLACEMENT_ESCAPE); // unpaired low surrogate
+								index += 6;
+								continue;
+							}
 							out.push(BACKSLASH);
 							out.push(U_LOWER);
 							out.extend_from_slice(digits);
@@ -549,6 +601,50 @@ pub fn canonical(v: &JsVal) -> String {
 				.map(|(k, val)| format!("{}:{}", escape_json_string(k), canonical(val)))
 				.collect();
 			format!("{{{}}}", inner.join(","))
+		}
+	}
+}
+
+#[cfg(test)]
+mod lone_surrogate_tests {
+	use super::*;
+
+	// V8's JSON.parse accepts lone surrogate escapes; serde_json rejects them. The repair path must
+	// rewrite an unpaired surrogate escape to U+FFFD so the event/tool-arg parse SUCCEEDS (graceful
+	// degradation) instead of erroring the stream / collapsing tool arguments to {}.
+	#[test]
+	fn event_payload_with_lone_high_surrogate_parses_to_replacement() {
+		let v = parse_with_repair_value(r#"{"type":"text_delta","text":"\ud800"}"#).expect("should parse");
+		assert_eq!(v["text"].as_str(), Some("\u{fffd}"));
+	}
+
+	#[test]
+	fn event_payload_with_lone_low_surrogate_parses_to_replacement() {
+		let v = parse_with_repair_value(r#"{"x":"\udc00y"}"#).expect("should parse");
+		assert_eq!(v["x"].as_str(), Some("\u{fffd}y"));
+	}
+
+	#[test]
+	fn valid_surrogate_pair_is_preserved() {
+		// 😀 = U+1F600; serde parses it directly (repair not even invoked).
+		let v = parse_with_repair_value(r#"{"text":"😀"}"#).expect("should parse");
+		assert_eq!(v["text"].as_str(), Some("\u{1f600}"));
+	}
+
+	#[test]
+	fn tool_args_with_lone_surrogate_do_not_collapse_to_empty() {
+		// Was: parse_streaming_json -> Obj(Vec::new()) (silent empty args). Now: full object with U+FFFD.
+		let v = parse_streaming_json(r#"{"file_text":"\ud83d incomplete"}"#);
+		match v {
+			JsVal::Obj(pairs) => {
+				assert!(!pairs.is_empty(), "tool args must not collapse to empty on a lone surrogate");
+				let (_, val) = pairs.iter().find(|(k, _)| k == "file_text").expect("file_text key present");
+				match val {
+					JsVal::Str(s) => assert!(s.contains('\u{fffd}') && s.contains("incomplete")),
+					other => panic!("expected string, got {:?}", other),
+				}
+			}
+			other => panic!("expected object, got {:?}", other),
 		}
 	}
 }

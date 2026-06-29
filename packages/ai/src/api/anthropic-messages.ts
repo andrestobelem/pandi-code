@@ -670,9 +670,10 @@ async function driveRustDecoder(args: {
 	};
 
 	const decoder = new glue.AnthropicIncrementalDecoder("anthropic-messages", model.provider, model.id);
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 	try {
 		decoder.take_start(); // discard: the caller already pushed {type:"start"}
-		const reader = response.body.getReader();
+		reader = response.body.getReader();
 		for (;;) {
 			if (signal?.aborted) {
 				throw new Error("Request was aborted"); // keep abort responsive mid-stream; terminal owns the rest
@@ -697,6 +698,15 @@ async function driveRustDecoder(args: {
 		applyUsage(finalMsg.usage);
 		calculateCost(model, output.usage);
 	} finally {
+		// Always release the body reader lock (mirrors the TS path's iterateSseMessages finally) — on
+		// normal done, abort, and any push/finish/translation throw — so the connection is not leaked.
+		if (reader) {
+			try {
+				reader.releaseLock();
+			} catch {
+				// releaseLock throws if a read is still pending; nothing else to do.
+			}
+		}
 		decoder.free();
 	}
 }
@@ -729,6 +739,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 
 		// Declared outside the try so the catch can tag an adapter-origin throw (see below).
 		let servedBy: "rust" | "ts" = "ts";
+		// True once driveRustDecoder RETURNS normally. Distinguishes a real adapter throw (drive did NOT
+		// complete) from a server error the decoder latched and the shared terminal block re-threw — only
+		// the former is tagged error:"adapter".
+		let rustDriveCompleted = false;
 
 		try {
 			let client: Anthropic;
@@ -787,7 +801,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			// SAME `output`/`blocks` and fall through into the shared terminal/catch (abort-first +
 			// done/error) below — the adapter never duplicates that logic.
 			let glue: RustStreamingGlue | undefined;
-			if (resolveRustStreaming(options?.env)) {
+			// Anthropic-only rollout is enforced HERE: the decoder is only validated against
+			// provider="anthropic" goldens, so never swap it in for third-party anthropic-messages proxies
+			// (github-copilot/minimax/kimi/opencode/gateways) even when the flag is ON.
+			if (model.provider === "anthropic" && resolveRustStreaming(options?.env)) {
 				try {
 					glue = loadRustStreaming(); // load-failure-ONLY fallback surface (wraps ONLY the load)
 				} catch (loadErr) {
@@ -816,9 +833,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					context,
 					signal: options?.signal,
 				});
-				await options?.onPath?.({ path: "rust" });
+				rustDriveCompleted = true; // drive returned without throwing (a latched server error still settles below)
 			} else {
-				await options?.onPath?.({ path: "ts" });
 				for await (const event of iterateAnthropicEvents(response, options?.signal)) {
 					if (event.type === "message_start") {
 						output.responseId = event.message.id;
@@ -1031,6 +1047,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				throw new Error(output.errorMessage || "An unknown error occurred");
 			}
 
+			// Observability: report the served path exactly once, on a clean done.
+			await options?.onPath?.({ path: servedBy });
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
@@ -1041,12 +1059,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
-			// A flag-ON Rust adapter throw (not a load failure — that already fell back to TS) reaches
-			// here as a normal stream error; tag it adapter-origin for prod attribution. Abort-origin
-			// (signal.aborted) is reported as the served path, not as an adapter error.
-			if (servedBy === "rust") {
-				await options?.onPath?.({ path: "rust", ...(options?.signal?.aborted ? {} : { error: "adapter" }) });
-			}
+			// Report the served path exactly once (mirrors the success branch). Tag error:"adapter" ONLY
+			// for a genuine adapter throw — i.e. Rust-served, the drive did NOT complete, and not an abort.
+			// A latched SERVER error (refusal / SSE error frame / ended-before-stop) lets driveRustDecoder
+			// return normally, so rustDriveCompleted is true and it is NOT mis-tagged as an adapter fault.
+			const adapterOrigin = servedBy === "rust" && !rustDriveCompleted && !options?.signal?.aborted;
+			await options?.onPath?.({ path: servedBy, ...(adapterOrigin ? { error: "adapter" as const } : {}) });
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}

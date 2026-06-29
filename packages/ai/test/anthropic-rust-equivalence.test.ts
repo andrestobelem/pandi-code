@@ -70,8 +70,8 @@ function normalizeSeq(events: AssistantMessageEvent[]) {
 
 // Settled message minus the only non-deterministic field (timestamp). Keeps content + usage (incl. cost).
 function settled(m: AssistantMessage) {
-	const clone = structuredClone(m) as AssistantMessage & { timestamp?: number };
-	delete clone.timestamp;
+	const clone = structuredClone(m) as AssistantMessage;
+	delete (clone as { timestamp?: number }).timestamp;
 	return clone;
 }
 
@@ -132,6 +132,43 @@ describe("PI_RUST_STREAMING flag-gate safety properties", () => {
 	it("flag-OFF performs ZERO wasm load", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 		await drain(streamAnthropic(model, context, { client: fakeClient(golden[0].chunks), env: {} }));
+		expect(loadRustStreaming).not.toHaveBeenCalled();
+	});
+
+	it("calls onPath exactly ONCE on a clean Rust-served stream", async () => {
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const onPath = vi.fn();
+		await drain(
+			streamAnthropic(model, context, {
+				client: fakeClient(golden[0].chunks),
+				env: { PI_RUST_STREAMING: "1" },
+				onPath,
+			}),
+		);
+		expect(onPath).toHaveBeenCalledTimes(1);
+		expect(onPath).toHaveBeenCalledWith({ path: "rust" });
+	});
+
+	it("a latched SERVER error (refusal) is NOT mis-tagged as error:'adapter' and fires onPath once", async () => {
+		// A refusal settles stopReason=error WITHOUT the adapter throwing (driveRustDecoder returns
+		// normally; the shared terminal re-throws). It must report path:"rust" with NO adapter tag.
+		const row = golden.find((r) => r.name === "refusal") ?? golden[0];
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const onPath = vi.fn();
+		await drain(
+			streamAnthropic(model, context, { client: fakeClient(row.chunks), env: { PI_RUST_STREAMING: "1" }, onPath }),
+		);
+		expect(onPath).toHaveBeenCalledTimes(1);
+		expect(onPath).toHaveBeenCalledWith({ path: "rust" }); // exact object: no error:"adapter"
+	});
+
+	it("a non-anthropic provider is NOT served by Rust even with the flag ON (provider gate)", async () => {
+		// resolveRustStreaming alone would say ON, but the fork also requires provider==="anthropic".
+		const base = getModel("anthropic", "claude-haiku-4-5");
+		const model = { ...base, provider: "github-copilot" } as typeof base;
+		await drain(
+			streamAnthropic(model, context, { client: fakeClient(golden[0].chunks), env: { PI_RUST_STREAMING: "1" } }),
+		);
 		expect(loadRustStreaming).not.toHaveBeenCalled();
 	});
 

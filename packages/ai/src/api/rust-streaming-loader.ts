@@ -46,6 +46,7 @@ export interface RustStreamingGlue {
 }
 
 let cached: RustStreamingGlue | null = null;
+let loadFailure: Error | null = null; // negative cache: once load fails, fail fast (no re-read/recompile per call)
 
 /** Absolute candidate paths to the CJS glue, prod (dist/wasm) first, then dev/test (test/gate/wasm). */
 function glueCandidates(): string[] {
@@ -108,6 +109,7 @@ function patchWasmRead(): () => void {
  */
 export function loadRustStreaming(): RustStreamingGlue {
 	if (cached) return cached;
+	if (loadFailure) throw loadFailure; // negative cache: don't re-read 236KB + recompile on every ON stream
 	const restore = patchWasmRead();
 	try {
 		let lastErr: unknown;
@@ -121,6 +123,9 @@ export function loadRustStreaming(): RustStreamingGlue {
 			}
 		}
 		throw lastErr ?? new Error(`Rust streaming glue (${GLUE_FILENAME}) not found in any known location`);
+	} catch (e) {
+		loadFailure = e instanceof Error ? e : new Error(String(e));
+		throw loadFailure;
 	} finally {
 		restore();
 	}
