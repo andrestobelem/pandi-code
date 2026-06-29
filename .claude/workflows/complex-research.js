@@ -41,6 +41,15 @@ const compact = (d, n = 60000) => {
   return s.length > n ? s.slice(0, n) + ' …[truncated]' : s;
 };
 
+// Wrap untrusted data AND neutralize any embedded <untrusted>/</untrusted> marker
+// so a malicious payload cannot break out of the fence. Use everywhere instead of
+// hand-building <untrusted kind="...">...</untrusted>.
+const fence = (kind, d) => {
+  const s = (typeof d === 'string' ? d : JSON.stringify(d))
+    .replace(/<\/?\s*untrusted/gi, (m) => m.replace(/untrusted/i, 'untrusted\u200b'));
+  return `<untrusted kind="${String(kind).replace(/[^a-z0-9_-]/gi, '')}">\n${s}\n</untrusted>`;
+};
+
 // Per-node model + reasoning-effort overrides.
 //   input.model / input.effort   -> global defaults applied to EVERY node
 //   input.models[role] / input.efforts[role] -> per-node override (role = the node's stable logical name)
@@ -103,10 +112,8 @@ Output format:
 ## Risks / gotchas
 ## Recommendation for this angle
 
-<untrusted kind="topic">
-Angle: ${angle}
-Question: ${question}
-</untrusted>`,
+${fence('topic', `Angle: ${angle}
+Question: ${question}`)}`,
       node('research', { model: 'haiku', effort: 'low', label: name, phase: 'Research' }),
     ).then((output) => output == null ? null : ({ name, output }));
   }),
@@ -143,9 +150,7 @@ Output format:
 6. Coverage gaps and what to verify next.
 
 Research outputs:
-<untrusted kind="findings">
-${compact(completedResearch.map((r) => ({ name: r.name, output: r.output })), 90000)}
-</untrusted>\n\nNow produce the output format above: executive summary first, prefer primary evidence, mark uncertainty, and explicitly note the ${failed} failed/empty branches.`,
+${fence("findings", compact(completedResearch.map((r) => ({ name: r.name, output: r.output })), 90000))}\n\nNow produce the output format above: executive summary first, prefer primary evidence, mark uncertainty, and explicitly note the ${failed} failed/empty branches.`,
   node('research-synthesis', { model: 'opus', effort: 'high', phase: 'Synthesis' }),
 );
 

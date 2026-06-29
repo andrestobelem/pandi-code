@@ -42,6 +42,15 @@ const compact = (d, n = 60000) => {
   return s.length > n ? s.slice(0, n) + ' …[truncated]' : s;
 };
 
+// Wrap untrusted data AND neutralize any embedded <untrusted>/</untrusted> marker
+// so a malicious payload cannot break out of the fence. Use everywhere instead of
+// hand-building <untrusted kind="...">...</untrusted>.
+const fence = (kind, d) => {
+  const s = (typeof d === 'string' ? d : JSON.stringify(d))
+    .replace(/<\/?\s*untrusted/gi, (m) => m.replace(/untrusted/i, 'untrusted\u200b'));
+  return `<untrusted kind="${String(kind).replace(/[^a-z0-9_-]/gi, '')}">\n${s}\n</untrusted>`;
+};
+
 // Per-node model + reasoning-effort overrides.
 //   input.model / input.effort   -> global defaults applied to EVERY node
 //   input.models[role] / input.efforts[role] -> per-node override (role = the node's stable logical name)
@@ -159,9 +168,7 @@ Output format:
 ## Non-findings / notes
 
 Target file to inspect:
-<untrusted kind="file">
-${file}
-</untrusted>`,
+${fence("file", file)}`,
       node('bug-hunt', { model: 'sonnet', effort: 'medium', label: `bug-hunt-${file}`, phase: 'Review' }),
     ).then((output) => output == null ? null : ({ name: `bug-hunt-${file}`, output })),
   ),
@@ -191,9 +198,7 @@ Output format:
 5. Suggested verification/tests.
 
 Reviews:
-<untrusted kind="findings">
-${compact(completedReviews.map((r) => ({ name: r.name, output: r.output })), 80000)}
-</untrusted>\n\nNow produce the output format above: executive verdict first, most severe findings first, discard uncited claims, and explicitly note the ${failed} failed/empty branches.`,
+${fence("findings", compact(completedReviews.map((r) => ({ name: r.name, output: r.output })), 80000))}\n\nNow produce the output format above: executive verdict first, most severe findings first, discard uncited claims, and explicitly note the ${failed} failed/empty branches.`,
   node('synthesis', { model: 'opus', effort: 'high', phase: 'Synthesis' }),
 );
 

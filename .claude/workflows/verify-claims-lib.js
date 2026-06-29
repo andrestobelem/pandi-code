@@ -19,6 +19,15 @@ const input = (() => { try { return typeof args === 'string' ? (JSON.parse(args)
 
 const compact = (d, n = 60000) => { const s = typeof d === 'string' ? d : JSON.stringify(d); return s && s.length > n ? s.slice(0, n) + ' …[truncated]' : s; };
 
+// Wrap untrusted data AND neutralize any embedded <untrusted>/</untrusted> marker
+// so a malicious payload cannot break out of the fence. Use everywhere instead of
+// hand-building <untrusted kind="...">...</untrusted>.
+const fence = (kind, d) => {
+  const s = (typeof d === 'string' ? d : JSON.stringify(d))
+    .replace(/<\/?\s*untrusted/gi, (m) => m.replace(/untrusted/i, 'untrusted\u200b'));
+  return `<untrusted kind="${String(kind).replace(/[^a-z0-9_-]/gi, '')}">\n${s}\n</untrusted>`;
+};
+
 // Per-node model + reasoning-effort overrides.
 //   input.model / input.effort   -> global defaults applied to EVERY node
 //   input.models[role] / input.efforts[role] -> per-node override (role = the node's stable logical name)
@@ -78,9 +87,9 @@ for (let i = 0; i < claims.length; i++) {
           `Your "evidence" MUST be a concrete citation: a file:line, a URL, or command output. ` +
           `If you have no such concrete citation, set evidence="INSUFFICIENT_EVIDENCE" and refuted=true.\n\n` +
           `Return JSON only matching the schema.\n\n` +
-          `Topic:\n<untrusted kind="topic">\n${compact(input?.topic ?? 'n/a', 4000)}\n</untrusted>\n` +
-          `Claim:\n<untrusted kind="claim">\n${compact(claim.claim, 2000)}\n</untrusted>\n` +
-          `Provided evidence:\n<untrusted kind="evidence">\n${compact(claim.evidence ?? 'none', 4000)}\n</untrusted>`,
+          `Topic:\n${fence("topic", compact(input?.topic ?? 'n/a', 4000))}\n` +
+          `Claim:\n${fence("claim", compact(claim.claim, 2000))}\n` +
+          `Provided evidence:\n${fence("evidence", compact(claim.evidence ?? 'none', 4000))}`,
         node('skeptic', {
           model: 'opus',
           effort: 'high',

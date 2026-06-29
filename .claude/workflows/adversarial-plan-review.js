@@ -38,6 +38,15 @@ const compact = (d, n = 60000) => {
   return s.length > n ? s.slice(0, n) + ' …[truncated]' : s;
 };
 
+// Wrap untrusted data AND neutralize any embedded <untrusted>/</untrusted> marker
+// so a malicious payload cannot break out of the fence. Use everywhere instead of
+// hand-building <untrusted kind="...">...</untrusted>.
+const fence = (kind, d) => {
+  const s = (typeof d === 'string' ? d : JSON.stringify(d))
+    .replace(/<\/?\s*untrusted/gi, (m) => m.replace(/untrusted/i, 'untrusted\u200b'));
+  return `<untrusted kind="${String(kind).replace(/[^a-z0-9_-]/gi, '')}">\n${s}\n</untrusted>`;
+};
+
 // Per-node model + reasoning-effort overrides.
 //   input.model / input.effort   -> global defaults applied to EVERY node
 //   input.models[role] / input.efforts[role] -> per-node override (role = the node's stable logical name)
@@ -117,9 +126,7 @@ This is independent reviewer ${index + 1}/${reviewers.length}. Your critique mus
 ${sharedContract}
 
 Plan:
-<untrusted kind="plan">
-${planText}
-</untrusted>`,
+${fence("plan", planText)}`,
       node('reviewer', { model: 'sonnet', effort: 'medium', label: reviewer.name, phase: 'Review' }),
     ).then((output) => (output == null || (typeof output === 'string' && output.trim() === '')) ? null : ({ name: reviewer.name, output })),
   ),
@@ -161,9 +168,7 @@ Output format:
 6. Coverage gaps / failed reviewers.
 
 Critiques:
-<untrusted kind="findings">
-${critiquesText}
-</untrusted>\n\nNow produce the output format above: revised plan first, must-fix changes next, discard unsupported claims, and explicitly note the ${failed} failed/empty reviewers.`,
+${fence("findings", critiquesText)}\n\nNow produce the output format above: revised plan first, must-fix changes next, discard unsupported claims, and explicitly note the ${failed} failed/empty reviewers.`,
   node('plan-synthesis', { model: 'opus', effort: 'high', phase: 'Synthesize' }),
 );
 
