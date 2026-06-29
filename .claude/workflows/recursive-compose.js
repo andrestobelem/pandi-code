@@ -86,7 +86,7 @@ const dispatchArgs = {
 };
 let dispatched;
 try {
-  dispatched = await workflow('router', { request: gate.rewrittenPrompt, runSelected: true, args: dispatchArgs });
+  dispatched = await workflow('router', { request: compact(gate.rewrittenPrompt), runSelected: true, args: dispatchArgs });
 } catch (err) {
   return { status: 'DEPTH_BLOCKED', stage: 'dispatch', error: String(err?.message ?? err),
     note: 'router → chosen workflow exceeded the runtime nesting depth. Claude Code is depth-1; run on pi with PI_DYNAMIC_WORKFLOWS_MAX_DEPTH>=2 (<=3 covers this chain).',
