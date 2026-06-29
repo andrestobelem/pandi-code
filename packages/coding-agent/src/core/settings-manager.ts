@@ -11,6 +11,7 @@ export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
+	triggerPercent?: number; // compact when context usage crosses this % of the window (1-99); unset => reserveTokens-only
 }
 
 export interface BranchSummarySettings {
@@ -773,11 +774,25 @@ export class SettingsManager {
 		return this.settings.compaction?.keepRecentTokens ?? 20000;
 	}
 
-	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
+	// Optional percentage trigger (1-99): compact when context usage crosses this % of the
+	// model's window. Unset => reserveTokens-only. Needed for large (e.g. 1M) windows, where
+	// `window - reserveTokens` only fires within ~16K of the cap and effectively never trips.
+	getCompactionTriggerPercent(): number | undefined {
+		const pct = this.settings.compaction?.triggerPercent;
+		return typeof pct === "number" && pct > 0 && pct < 100 ? pct : undefined;
+	}
+
+	getCompactionSettings(): {
+		enabled: boolean;
+		reserveTokens: number;
+		keepRecentTokens: number;
+		triggerPercent?: number;
+	} {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(),
+			triggerPercent: this.getCompactionTriggerPercent(),
 		};
 	}
 

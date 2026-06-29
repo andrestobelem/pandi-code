@@ -117,6 +117,8 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	/** Optional: compact when context usage crosses this % of the window (1-99). Unset => reserveTokens-only. */
+	triggerPercent?: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
@@ -224,7 +226,15 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
  */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+	const reserveTrigger = contextWindow - settings.reserveTokens;
+	// Optional percentage trigger: compact once usage crosses triggerPercent% of the window.
+	// Take the EARLIER of the percentage and reserve triggers — on a large window (e.g. 1M) a
+	// small reserveTokens makes `window - reserveTokens` fire only within ~16K of the cap (so it
+	// effectively never trips), and the percentage is what actually triggers in time. Unset =>
+	// reserve-only (unchanged behavior).
+	const pct = settings.triggerPercent;
+	const percentTrigger = typeof pct === "number" && pct > 0 && pct < 100 ? contextWindow * (pct / 100) : Infinity;
+	return contextTokens > Math.min(reserveTrigger, percentTrigger);
 }
 
 // ============================================================================

@@ -276,6 +276,23 @@ describe("shouldCompact", () => {
 
 		expect(shouldCompact(95000, 100000, settings)).toBe(false);
 	});
+
+	it("triggers at triggerPercent of the window (fires on 1M windows where reserveTokens alone won't)", () => {
+		// Opus 4.8: 1M window. reserveTokens-only would fire at 983,616 — effectively never.
+		const withPct: CompactionSettings = {
+			enabled: true,
+			reserveTokens: 16384,
+			keepRecentTokens: 20000,
+			triggerPercent: 80,
+		};
+		expect(shouldCompact(800_001, 1_000_000, withPct)).toBe(true); // > 80%
+		expect(shouldCompact(799_999, 1_000_000, withPct)).toBe(false); // < 80%
+
+		// Without triggerPercent, the 1M window only fires within reserveTokens of the cap.
+		const noPct: CompactionSettings = { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 };
+		expect(shouldCompact(800_001, 1_000_000, noPct)).toBe(false);
+		expect(shouldCompact(983_617, 1_000_000, noPct)).toBe(true);
+	});
 });
 
 describe("findCutPoint", () => {
