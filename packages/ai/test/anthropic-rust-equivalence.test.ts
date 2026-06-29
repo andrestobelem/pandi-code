@@ -172,6 +172,62 @@ describe("PI_RUST_STREAMING flag-gate safety properties", () => {
 		expect(loadRustStreaming).not.toHaveBeenCalled();
 	});
 
+	it("preserves tool-call argument KEY ORDER (non-alphabetical) identically OFF vs ON", async () => {
+		// Regression for the wasm canonical() key-sort divergence: a tool input emitted as
+		// {old_string, new_string} (NOT alphabetical) must keep wire order on both paths. toEqual is
+		// order-insensitive, so compare JSON.stringify (order-SENSITIVE).
+		const enc = new TextEncoder();
+		const frames = [
+			{
+				event: "message_start",
+				data: { type: "message_start", message: { id: "msg_ko", usage: { input_tokens: 3, output_tokens: 0 } } },
+			},
+			{
+				event: "content_block_start",
+				data: {
+					type: "content_block_start",
+					index: 0,
+					content_block: { type: "tool_use", id: "tu_1", name: "Edit", input: {} },
+				},
+			},
+			{
+				event: "content_block_delta",
+				data: {
+					type: "content_block_delta",
+					index: 0,
+					delta: { type: "input_json_delta", partial_json: '{"old_string":"a",' },
+				},
+			},
+			{
+				event: "content_block_delta",
+				data: {
+					type: "content_block_delta",
+					index: 0,
+					delta: { type: "input_json_delta", partial_json: '"new_string":"b"}' },
+				},
+			},
+			{ event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
+			{
+				event: "message_delta",
+				data: { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } },
+			},
+			{ event: "message_stop", data: { type: "message_stop" } },
+		];
+		const wire = frames.map((f) => `event: ${f.event}\ndata: ${JSON.stringify(f.data)}\n`).join("\n");
+		const chunks = [Array.from(enc.encode(wire))];
+		const model = getModel("anthropic", "claude-haiku-4-5");
+
+		const off = await streamAnthropic(model, context, { client: fakeClient(chunks), env: {} }).result();
+		const on = await streamAnthropic(model, context, {
+			client: fakeClient(chunks),
+			env: { PI_RUST_STREAMING: "1" },
+		}).result();
+		const argsOff = (off.content[0] as { arguments: unknown }).arguments;
+		const argsOn = (on.content[0] as { arguments: unknown }).arguments;
+		expect(JSON.stringify(argsOn)).toBe(JSON.stringify(argsOff)); // order-sensitive
+		expect(JSON.stringify(argsOn)).toBe('{"old_string":"a","new_string":"b"}'); // wire order, not sorted
+	});
+
 	it("process.env force-OFF wins over options.env (kill switch)", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 		const prev = process.env.PI_RUST_STREAMING;

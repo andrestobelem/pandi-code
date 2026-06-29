@@ -32,7 +32,7 @@ import type {
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
-import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { getEnvOnlyValue, getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
@@ -85,8 +85,10 @@ let warnedRustLoadFailed = false;
  */
 function resolveRustStreaming(env?: ProviderEnv): boolean {
 	const proc = typeof process !== "undefined" ? process : undefined;
-	// (1) operator force-OFF wins, regardless of options.env.
-	const forced = proc?.env?.PI_RUST_STREAMING;
+	// (1) operator force-OFF wins, regardless of options.env. Resolve through the env-ONLY sandbox-aware
+	// lookup (process.env + Bun /proc fallback) — NOT proc.env directly — so the kill switch still fires
+	// in the Bun-compiled empty-process.env sandbox where the opt-in (getProviderEnvValue) would not.
+	const forced = getEnvOnlyValue("PI_RUST_STREAMING");
 	if (forced === "0" || forced === "false") {
 		return false;
 	}
@@ -632,10 +634,24 @@ async function driveRustDecoder(args: {
 					if (snap) assignBlock(ci, snap[ci]);
 					stream.push({ type: "thinking_start", contentIndex: ci, partial: output });
 					break;
-				case "toolcall_start":
-					if (snap) assignBlock(ci, snap[ci]);
+				case "toolcall_start": {
+					// Build the block from the decoder's id/name (OAuth-remapped), but DO NOT take its
+					// `arguments` from the snapshot: the wasm boundary's canonical() alphabetically sorts
+					// object keys, whereas the TS path preserves model emission order. Mirror TS exactly —
+					// accumulate the raw partial_json from deltas and parse with parseStreamingJson — so
+					// tool arguments are byte-identical to the TS path (key order + V8 parse semantics).
+					const tsnap = snap?.[ci];
+					const name = tsnap?.type === "toolCall" ? tsnap.name : "";
+					output.content[ci] = {
+						type: "toolCall",
+						id: tsnap?.type === "toolCall" ? tsnap.id : "",
+						name: isOAuth ? fromClaudeCodeName(name, context.tools) : name,
+						arguments: {},
+						partialJson: "",
+					} as unknown as AssistantMessage["content"][number];
 					stream.push({ type: "toolcall_start", contentIndex: ci, partial: output });
 					break;
+				}
 				case "text_delta":
 					if (snap) assignBlock(ci, snap[ci]);
 					stream.push({ type: "text_delta", contentIndex: ci, delta: ev.delta ?? "", partial: output });
@@ -644,10 +660,15 @@ async function driveRustDecoder(args: {
 					if (snap) assignBlock(ci, snap[ci]);
 					stream.push({ type: "thinking_delta", contentIndex: ci, delta: ev.delta ?? "", partial: output });
 					break;
-				case "toolcall_delta":
-					if (snap) assignBlock(ci, snap[ci]);
+				case "toolcall_delta": {
+					const block = output.content[ci] as ToolCall & { partialJson?: string };
+					if (block) {
+						block.partialJson = (block.partialJson ?? "") + (ev.delta ?? "");
+						block.arguments = parseStreamingJson(block.partialJson);
+					}
 					stream.push({ type: "toolcall_delta", contentIndex: ci, delta: ev.delta ?? "", partial: output });
 					break;
+				}
 				case "text_end":
 					if (snap) assignBlock(ci, snap[ci]);
 					stream.push({ type: "text_end", contentIndex: ci, content: ev.content ?? "", partial: output });
@@ -656,8 +677,12 @@ async function driveRustDecoder(args: {
 					if (snap) assignBlock(ci, snap[ci]);
 					stream.push({ type: "thinking_end", contentIndex: ci, content: ev.content ?? "", partial: output });
 					break;
-				case "toolcall_end":
-					if (snap) assignBlock(ci, snap[ci]);
+				case "toolcall_end": {
+					const block = output.content[ci] as ToolCall & { partialJson?: string };
+					if (block) {
+						block.arguments = parseStreamingJson(block.partialJson ?? "");
+						delete (block as { partialJson?: string }).partialJson; // scratch buffer; never persist
+					}
 					stream.push({
 						type: "toolcall_end",
 						contentIndex: ci,
@@ -665,6 +690,7 @@ async function driveRustDecoder(args: {
 						partial: output,
 					});
 					break;
+				}
 			}
 		}
 	};

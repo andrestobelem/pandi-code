@@ -50,3 +50,13 @@ export function getProviderEnvValue(name: string, env?: ProviderEnv): string | u
 		undefined
 	);
 }
+
+/**
+ * Resolve an env value from the OS ENVIRONMENT only (process.env + the Bun sandbox /proc fallback),
+ * IGNORING scoped options.env. Use for operator kill switches that must win over a caller opt-in even
+ * in the Bun-compiled sandbox where process.env can be empty (oven-sh/bun#27802) — there, reading
+ * process.env directly would silently miss an OS-level force-OFF while options.env could still opt in.
+ */
+export function getEnvOnlyValue(name: string): string | undefined {
+	return (typeof process !== "undefined" ? process.env[name] : undefined) || getBunSandboxEnvValue(name) || undefined;
+}
