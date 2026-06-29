@@ -48,13 +48,30 @@ export interface RustStreamingGlue {
 let cached: RustStreamingGlue | null = null;
 let loadFailure: Error | null = null; // negative cache: once load fails, fail fast (no re-read/recompile per call)
 
-/** Absolute candidate paths to the CJS glue, prod (dist/wasm) first, then dev/test (test/gate/wasm). */
-function glueCandidates(): string[] {
+/**
+ * Absolute candidate paths to the CJS glue, in resolution order:
+ *   1. dist/api -> dist/wasm           (prod npm/Node install; this file is dist/api/…)
+ *   2. src/api  -> test/gate/wasm      (dev/test; the equivalence test drives the real glue)
+ *   3. execDir/wasm                    (bun --compile binary: copy-binary-assets ships the whole
+ *                                       dist/wasm dir — glue + _bg.wasm + the {"type":"commonjs"}
+ *                                       sidecar — next to the `pi` binary, because import.meta.url
+ *                                       points into $bunfs there, not to a real on-disk dir)
+ *   4. execDir/wasm/… is preferred over a flat execDir copy: the glue is CJS but the binary's
+ *      sibling package.json is "type":"module", so the glue MUST live in a dir carrying its own
+ *      commonjs sidecar (a flat execDir/glue.js would be mis-resolved as ESM and fail to require).
+ */
+export function glueCandidates(): string[] {
 	const here = path.dirname(fileURLToPath(import.meta.url)); // dist/api or src/api
-	return [
+	const candidates = [
 		path.join(here, "..", "wasm", GLUE_FILENAME), // dist/api -> dist/wasm (prod)
 		path.join(here, "..", "..", "test", "gate", "wasm", GLUE_FILENAME), // src/api -> test/gate/wasm (dev/test)
 	];
+	const execPath = typeof process !== "undefined" ? process.execPath : "";
+	if (execPath) {
+		// bun --compile: the glue dir sits next to the binary (execDir/wasm) with its commonjs sidecar.
+		candidates.push(path.join(path.dirname(execPath), "wasm", GLUE_FILENAME));
+	}
+	return candidates;
 }
 
 function fallbackWasmPaths(): string[] {

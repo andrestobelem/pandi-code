@@ -375,4 +375,14 @@ describe("PI_RUST_STREAMING flag-gate safety properties", () => {
 		expect(normalizeSeq(on)).toEqual(normalizeSeq(off)); // identical to OFF — fell back to TS
 		expect(onPath).toHaveBeenCalledWith({ path: "ts" });
 	});
+
+	it("glueCandidates includes an execPath-adjacent path so the bun-compiled binary can resolve the glue", async () => {
+		// In a bun --compile binary import.meta.url points into $bunfs (no on-disk dist/wasm), so the
+		// loader must also look next to the binary at execDir/wasm — where copy-binary-assets ships the
+		// whole dist/wasm dir (glue + _bg.wasm + the {"type":"commonjs"} sidecar). Without this candidate
+		// PI_RUST_STREAMING=1 silently no-ops to TS on the flagship binary.
+		const { glueCandidates } = await import("../src/api/rust-streaming-loader.ts");
+		const execWasm = join(dirname(process.execPath), "wasm", "ai_streaming_core.js");
+		expect(glueCandidates()).toContain(execWasm);
+	});
 });
