@@ -269,7 +269,11 @@ const validateCode = (src) => {
   const problems = [];
   const s = String(src ?? "");
   if (!s.trim()) problems.push("empty code");
-  if (/\b(import|require)\s*\(?/.test(s)) problems.push("uses import/require (must use helper globals only)");
+  // Match REAL import statements / require() calls only — the old /\b(import|require)\s*\(?/
+  // false-fired on prose and on JSON-Schema `required:` (ubiquitous), so every schema-using
+  // draft failed validation and was never written.
+  const usesImport = /\bimport\s*[('"{*]/.test(s) || /\bimport\s+[\w$]+\s+from\b/.test(s) || /\bimport\s+[\w$]+\s*,/.test(s);
+  if (usesImport || /\brequire\s*\(/.test(s)) problems.push("uses import/require (must use helper globals only)");
   if (!/export\s+const\s+meta\s*=/.test(s)) problems.push("missing `export const meta = { ... }` literal");
   if (/agent\s*\(\s*\{/.test(s)) problems.push("uses object-form agent({...}); must be agent(promptString, opts)");
   if (!/\bagent\s*\(/.test(s)) problems.push("never calls agent()");
