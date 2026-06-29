@@ -36,6 +36,7 @@ import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
+import { loadRustStreaming, type RustStreamingGlue } from "./rust-streaming-loader.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
 
@@ -67,6 +68,41 @@ function getCacheControl(
 		retention,
 		cacheControl: { type: "ephemeral", ...(ttl && { ttl }) },
 	};
+}
+
+let warnedRustOffNonNode = false;
+let warnedRustLoadFailed = false;
+
+/**
+ * Resolve whether the Rust streaming decoder is enabled for this stream. DEFAULT OFF.
+ *
+ * Kill-switch (Decision C): an EXPLICIT process.env PI_RUST_STREAMING in {"0","false"} force-OFF
+ * wins over options.env. getProviderEnvValue (provider-env.ts) resolves env?.[name] BEFORE
+ * process.env, so the kill-switch CANNOT route through it — read process.env DIRECTLY first.
+ *
+ * Non-Node guard: without a Node module loader (no process.execPath) the CJS glue cannot be
+ * required, so force-OFF with a one-time warn.
+ */
+function resolveRustStreaming(env?: ProviderEnv): boolean {
+	const proc = typeof process !== "undefined" ? process : undefined;
+	// (1) operator force-OFF wins, regardless of options.env.
+	const forced = proc?.env?.PI_RUST_STREAMING;
+	if (forced === "0" || forced === "false") {
+		return false;
+	}
+	// (2) non-Node guard (no execPath -> cannot createRequire the CJS glue).
+	if (!proc || typeof proc.execPath !== "string" || proc.execPath.length === 0) {
+		if (!warnedRustOffNonNode) {
+			warnedRustOffNonNode = true;
+			console.warn(
+				"[pi-ai] PI_RUST_STREAMING unavailable in this runtime (no Node module loader); using the TypeScript path.",
+			);
+		}
+		return false;
+	}
+	// (3) opt-in via options.env or process.env (truthy "1"/"true"); default OFF.
+	const v = getProviderEnvValue("PI_RUST_STREAMING", env);
+	return v === "1" || v === "true";
 }
 
 // Stealth mode: Mimic Claude Code's tool naming exactly
@@ -262,6 +298,13 @@ export interface AnthropicOptions extends StreamOptions {
 			totalTokens: number;
 		};
 	}) => void;
+	/**
+	 * Production observability (NOT gate-only). Invoked once per stream with which path served it
+	 * ("rust" | "ts"), tagged error:"adapter" when a flag-ON Rust adapter throw reached the catch.
+	 * Lets an on-call answer "is PI_RUST_STREAMING actually serving here?" and "did it silently fall
+	 * back to TS?". Default undefined => no-op, so default-OFF behavior is unchanged.
+	 */
+	onPath?: (info: { path: "rust" | "ts"; error?: "adapter" }) => void | Promise<void>;
 }
 
 function mergeHeaders(...headerSources: (ProviderHeaders | undefined)[]): ProviderHeaders {
@@ -487,6 +530,177 @@ async function* iterateAnthropicEvents(
 	}
 }
 
+/** A block as it appears in a Rust decoder `snapshot` (content-only; the settled TS block shape). */
+type SnapshotBlock =
+	| { type: "text"; text: string }
+	| { type: "thinking"; thinking: string; thinkingSignature: string; redacted?: boolean }
+	| { type: "toolCall"; id: string; name: string; arguments: Record<string, any> };
+
+interface CanonicalEvent {
+	type: string;
+	phase?: "start" | "delta";
+	contentIndex?: number;
+	delta?: string;
+	content?: string;
+	responseId?: string;
+	stopReason?: StopReason;
+	errorMessage?: string;
+	snapshot?: SnapshotBlock[];
+	usage?: AssistantMessage["usage"];
+}
+
+/**
+ * Drive the Rust AnthropicIncrementalDecoder over `response.body` and translate its canonical events
+ * into AssistantMessageEvents on the SHARED `stream`, mutating the SAME `output` the TS path mutates.
+ * The decoder's canonical events are a normalized, content-only transcript (the gate oracle), NOT
+ * wire events — so this is a TRANSLATION layer, never a passthrough:
+ *   - `start`/`done`/`error` and `message_meta` carry no wire event: discarded (start already pushed
+ *     by the caller; the shared terminal/catch owns done/error; message_meta only mutates `output`).
+ *   - each block field is read from `ev.snapshot[ev.contentIndex]` (the decoder emits no inline
+ *     id/name/arguments); for tool_use the name is OAuth-remapped exactly as the TS path does.
+ *   - terminal message-level fields (stopReason/errorMessage/usage) are reconciled from
+ *     `final_message()` after the loop — authoritative for the error / ended-before-stop paths that
+ *     emit no message_meta("delta"). The gate proves that settled message byte-matches the TS oracle,
+ *     so the caller's existing terminal block throws the SAME errorMessage TS would.
+ * Any throw here (push/finish/translation) propagates to the caller's catch as a normal stream error;
+ * it does NOT fall back to TS (only a load failure does).
+ */
+async function driveRustDecoder(args: {
+	glue: RustStreamingGlue;
+	response: Response;
+	stream: AssistantMessageEventStream;
+	output: AssistantMessage;
+	model: Model<"anthropic-messages">;
+	isOAuth: boolean;
+	context: Context;
+	signal?: AbortSignal;
+}): Promise<void> {
+	const { glue, response, stream, output, model, isOAuth, context, signal } = args;
+	if (!response.body) {
+		throw new Error("Attempted to iterate over an Anthropic response with no body");
+	}
+
+	const applyUsage = (u?: AssistantMessage["usage"]): void => {
+		if (!u) return;
+		output.usage.input = u.input;
+		output.usage.output = u.output;
+		output.usage.cacheRead = u.cacheRead;
+		output.usage.cacheWrite = u.cacheWrite;
+		if (u.cacheWrite1h !== undefined) output.usage.cacheWrite1h = u.cacheWrite1h;
+		if (u.reasoning !== undefined) output.usage.reasoning = u.reasoning;
+		output.usage.totalTokens = u.totalTokens;
+	};
+
+	// Mirror output.content[ci] from the decoder snapshot block (the settled-so-far block state),
+	// OAuth-remapping tool names exactly as the TS path does (the decoder stores the raw name).
+	const assignBlock = (ci: number, snap: SnapshotBlock): void => {
+		if (snap.type === "toolCall" && isOAuth) {
+			output.content[ci] = {
+				...snap,
+				name: fromClaudeCodeName(snap.name, context.tools),
+			} as unknown as AssistantMessage["content"][number];
+		} else {
+			output.content[ci] = snap as unknown as AssistantMessage["content"][number];
+		}
+	};
+
+	const applyEvents = (events: CanonicalEvent[]): void => {
+		for (const ev of events) {
+			const ci = ev.contentIndex ?? -1;
+			const snap = ev.snapshot;
+			switch (ev.type) {
+				case "start":
+				case "done":
+				case "error":
+					break; // not wire events: start already pushed; shared terminal/catch owns done/error
+				case "message_meta": {
+					if (ev.phase === "start") {
+						if (ev.responseId != null) output.responseId = ev.responseId;
+					} else {
+						if (ev.stopReason != null) output.stopReason = ev.stopReason;
+						if (ev.errorMessage != null) output.errorMessage = ev.errorMessage;
+					}
+					applyUsage(ev.usage);
+					calculateCost(model, output.usage);
+					break;
+				}
+				case "text_start":
+					if (snap) assignBlock(ci, snap[ci]);
+					stream.push({ type: "text_start", contentIndex: ci, partial: output });
+					break;
+				case "thinking_start":
+					if (snap) assignBlock(ci, snap[ci]);
+					stream.push({ type: "thinking_start", contentIndex: ci, partial: output });
+					break;
+				case "toolcall_start":
+					if (snap) assignBlock(ci, snap[ci]);
+					stream.push({ type: "toolcall_start", contentIndex: ci, partial: output });
+					break;
+				case "text_delta":
+					if (snap) assignBlock(ci, snap[ci]);
+					stream.push({ type: "text_delta", contentIndex: ci, delta: ev.delta ?? "", partial: output });
+					break;
+				case "thinking_delta":
+					if (snap) assignBlock(ci, snap[ci]);
+					stream.push({ type: "thinking_delta", contentIndex: ci, delta: ev.delta ?? "", partial: output });
+					break;
+				case "toolcall_delta":
+					if (snap) assignBlock(ci, snap[ci]);
+					stream.push({ type: "toolcall_delta", contentIndex: ci, delta: ev.delta ?? "", partial: output });
+					break;
+				case "text_end":
+					if (snap) assignBlock(ci, snap[ci]);
+					stream.push({ type: "text_end", contentIndex: ci, content: ev.content ?? "", partial: output });
+					break;
+				case "thinking_end":
+					if (snap) assignBlock(ci, snap[ci]);
+					stream.push({ type: "thinking_end", contentIndex: ci, content: ev.content ?? "", partial: output });
+					break;
+				case "toolcall_end":
+					if (snap) assignBlock(ci, snap[ci]);
+					stream.push({
+						type: "toolcall_end",
+						contentIndex: ci,
+						toolCall: output.content[ci] as ToolCall,
+						partial: output,
+					});
+					break;
+			}
+		}
+	};
+
+	const decoder = new glue.AnthropicIncrementalDecoder("anthropic-messages", model.provider, model.id);
+	try {
+		decoder.take_start(); // discard: the caller already pushed {type:"start"}
+		const reader = response.body.getReader();
+		for (;;) {
+			if (signal?.aborted) {
+				throw new Error("Request was aborted"); // keep abort responsive mid-stream; terminal owns the rest
+			}
+			const { value, done } = await reader.read();
+			if (done) break;
+			if (value) applyEvents(JSON.parse(decoder.push(value)) as CanonicalEvent[]);
+		}
+		applyEvents(JSON.parse(decoder.finish()) as CanonicalEvent[]); // flush framer tail
+
+		// Reconcile message-level fields from the settled message (authoritative for error /
+		// ended-before-stop paths that emit no message_meta("delta")).
+		const finalMsg = JSON.parse(decoder.final_message()) as {
+			responseId?: string;
+			stopReason?: StopReason;
+			errorMessage?: string;
+			usage?: AssistantMessage["usage"];
+		};
+		if (finalMsg.responseId != null) output.responseId = finalMsg.responseId;
+		if (finalMsg.stopReason != null) output.stopReason = finalMsg.stopReason;
+		if (finalMsg.errorMessage != null) output.errorMessage = finalMsg.errorMessage;
+		applyUsage(finalMsg.usage);
+		calculateCost(model, output.usage);
+	} finally {
+		decoder.free();
+	}
+}
+
 export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 	model: Model<"anthropic-messages">,
 	context: Context,
@@ -512,6 +726,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
+
+		// Declared outside the try so the catch can tag an adapter-origin throw (see below).
+		let servedBy: "rust" | "ts" = "ts";
 
 		try {
 			let client: Anthropic;
@@ -565,206 +782,244 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
 
-			for await (const event of iterateAnthropicEvents(response, options?.signal)) {
-				if (event.type === "message_start") {
-					output.responseId = event.message.id;
-					// Capture initial token usage from message_start event
-					// This ensures we have input token counts even if the stream is aborted early
-					output.usage.input = event.message.usage.input_tokens || 0;
-					output.usage.output = event.message.usage.output_tokens || 0;
-					output.usage.cacheRead = event.message.usage.cache_read_input_tokens || 0;
-					output.usage.cacheWrite = event.message.usage.cache_creation_input_tokens || 0;
-					output.usage.cacheWrite1h = event.message.usage.cache_creation?.ephemeral_1h_input_tokens || 0;
-					// Anthropic doesn't provide total_tokens, compute from components
-					output.usage.totalTokens =
-						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-					calculateCost(model, output.usage);
-					// GATE-ONLY: mirror the Rust decoder's message_meta("start") at this set-point
-					// (responseId + initial usage; reasoning not yet set). No-op in production.
-					options?.onMeta?.({
-						phase: "start",
-						responseId: output.responseId,
-						usage: {
-							input: output.usage.input,
-							output: output.usage.output,
-							cacheRead: output.usage.cacheRead,
-							cacheWrite: output.usage.cacheWrite,
-							cacheWrite1h: output.usage.cacheWrite1h,
-							totalTokens: output.usage.totalTokens,
-						},
-					});
-				} else if (event.type === "content_block_start") {
-					if (event.content_block.type === "text") {
-						const block: Block = {
-							type: "text",
-							text: "",
-							index: event.index,
-						};
-						output.content.push(block);
-						stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
-					} else if (event.content_block.type === "thinking") {
-						const block: Block = {
-							type: "thinking",
-							thinking: "",
-							thinkingSignature: "",
-							index: event.index,
-						};
-						output.content.push(block);
-						stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
-					} else if (event.content_block.type === "redacted_thinking") {
-						const block: Block = {
-							type: "thinking",
-							thinking: "[Reasoning redacted]",
-							thinkingSignature: event.content_block.data,
-							redacted: true,
-							index: event.index,
-						};
-						output.content.push(block);
-						stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
-					} else if (event.content_block.type === "tool_use") {
-						const block: Block = {
-							type: "toolCall",
-							id: event.content_block.id,
-							name: isOAuth
-								? fromClaudeCodeName(event.content_block.name, context.tools)
-								: event.content_block.name,
-							arguments: (event.content_block.input as Record<string, any>) ?? {},
-							partialJson: "",
-							index: event.index,
-						};
-						output.content.push(block);
-						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+			// PI_RUST_STREAMING fork (default-OFF). When ON and the glue loads, the Rust incremental
+			// decoder drives the stream instead of the TS for-await loop below; both paths mutate the
+			// SAME `output`/`blocks` and fall through into the shared terminal/catch (abort-first +
+			// done/error) below — the adapter never duplicates that logic.
+			let glue: RustStreamingGlue | undefined;
+			if (resolveRustStreaming(options?.env)) {
+				try {
+					glue = loadRustStreaming(); // load-failure-ONLY fallback surface (wraps ONLY the load)
+				} catch (loadErr) {
+					if (!warnedRustLoadFailed) {
+						warnedRustLoadFailed = true;
+						console.warn(
+							`[pi-ai] PI_RUST_STREAMING load failed (${loadErr instanceof Error ? loadErr.message : String(loadErr)}); falling back to the TypeScript path.`,
+						);
 					}
-				} else if (event.type === "content_block_delta") {
-					if (event.delta.type === "text_delta") {
+					glue = undefined; // degrade to TS
+				}
+			}
+
+			if (glue) {
+				servedBy = "rust";
+				// Any throw here (push/finish/translation) propagates to the shared catch as a NORMAL
+				// stream error tagged adapter-origin — it does NOT re-route to TS (a parity bug must
+				// surface, not be masked). Only the load above falls back.
+				await driveRustDecoder({
+					glue,
+					response,
+					stream,
+					output,
+					model,
+					isOAuth,
+					context,
+					signal: options?.signal,
+				});
+				await options?.onPath?.({ path: "rust" });
+			} else {
+				await options?.onPath?.({ path: "ts" });
+				for await (const event of iterateAnthropicEvents(response, options?.signal)) {
+					if (event.type === "message_start") {
+						output.responseId = event.message.id;
+						// Capture initial token usage from message_start event
+						// This ensures we have input token counts even if the stream is aborted early
+						output.usage.input = event.message.usage.input_tokens || 0;
+						output.usage.output = event.message.usage.output_tokens || 0;
+						output.usage.cacheRead = event.message.usage.cache_read_input_tokens || 0;
+						output.usage.cacheWrite = event.message.usage.cache_creation_input_tokens || 0;
+						output.usage.cacheWrite1h = event.message.usage.cache_creation?.ephemeral_1h_input_tokens || 0;
+						// Anthropic doesn't provide total_tokens, compute from components
+						output.usage.totalTokens =
+							output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
+						calculateCost(model, output.usage);
+						// GATE-ONLY: mirror the Rust decoder's message_meta("start") at this set-point
+						// (responseId + initial usage; reasoning not yet set). No-op in production.
+						options?.onMeta?.({
+							phase: "start",
+							responseId: output.responseId,
+							usage: {
+								input: output.usage.input,
+								output: output.usage.output,
+								cacheRead: output.usage.cacheRead,
+								cacheWrite: output.usage.cacheWrite,
+								cacheWrite1h: output.usage.cacheWrite1h,
+								totalTokens: output.usage.totalTokens,
+							},
+						});
+					} else if (event.type === "content_block_start") {
+						if (event.content_block.type === "text") {
+							const block: Block = {
+								type: "text",
+								text: "",
+								index: event.index,
+							};
+							output.content.push(block);
+							stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
+						} else if (event.content_block.type === "thinking") {
+							const block: Block = {
+								type: "thinking",
+								thinking: "",
+								thinkingSignature: "",
+								index: event.index,
+							};
+							output.content.push(block);
+							stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
+						} else if (event.content_block.type === "redacted_thinking") {
+							const block: Block = {
+								type: "thinking",
+								thinking: "[Reasoning redacted]",
+								thinkingSignature: event.content_block.data,
+								redacted: true,
+								index: event.index,
+							};
+							output.content.push(block);
+							stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
+						} else if (event.content_block.type === "tool_use") {
+							const block: Block = {
+								type: "toolCall",
+								id: event.content_block.id,
+								name: isOAuth
+									? fromClaudeCodeName(event.content_block.name, context.tools)
+									: event.content_block.name,
+								arguments: (event.content_block.input as Record<string, any>) ?? {},
+								partialJson: "",
+								index: event.index,
+							};
+							output.content.push(block);
+							stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+						}
+					} else if (event.type === "content_block_delta") {
+						if (event.delta.type === "text_delta") {
+							const index = blocks.findIndex((b) => b.index === event.index);
+							const block = blocks[index];
+							if (block && block.type === "text") {
+								block.text += event.delta.text;
+								stream.push({
+									type: "text_delta",
+									contentIndex: index,
+									delta: event.delta.text,
+									partial: output,
+								});
+							}
+						} else if (event.delta.type === "thinking_delta") {
+							const index = blocks.findIndex((b) => b.index === event.index);
+							const block = blocks[index];
+							if (block && block.type === "thinking") {
+								block.thinking += event.delta.thinking;
+								stream.push({
+									type: "thinking_delta",
+									contentIndex: index,
+									delta: event.delta.thinking,
+									partial: output,
+								});
+							}
+						} else if (event.delta.type === "input_json_delta") {
+							const index = blocks.findIndex((b) => b.index === event.index);
+							const block = blocks[index];
+							if (block && block.type === "toolCall") {
+								block.partialJson += event.delta.partial_json;
+								block.arguments = parseStreamingJson(block.partialJson);
+								stream.push({
+									type: "toolcall_delta",
+									contentIndex: index,
+									delta: event.delta.partial_json,
+									partial: output,
+								});
+							}
+						} else if (event.delta.type === "signature_delta") {
+							const index = blocks.findIndex((b) => b.index === event.index);
+							const block = blocks[index];
+							if (block && block.type === "thinking") {
+								block.thinkingSignature = block.thinkingSignature || "";
+								block.thinkingSignature += event.delta.signature;
+							}
+						}
+					} else if (event.type === "content_block_stop") {
 						const index = blocks.findIndex((b) => b.index === event.index);
 						const block = blocks[index];
-						if (block && block.type === "text") {
-							block.text += event.delta.text;
-							stream.push({
-								type: "text_delta",
-								contentIndex: index,
-								delta: event.delta.text,
-								partial: output,
-							});
+						if (block) {
+							delete (block as any).index;
+							if (block.type === "text") {
+								stream.push({
+									type: "text_end",
+									contentIndex: index,
+									content: block.text,
+									partial: output,
+								});
+							} else if (block.type === "thinking") {
+								stream.push({
+									type: "thinking_end",
+									contentIndex: index,
+									content: block.thinking,
+									partial: output,
+								});
+							} else if (block.type === "toolCall") {
+								block.arguments = parseStreamingJson(block.partialJson);
+								// Finalize in-place and strip the scratch buffer so replay only
+								// carries parsed arguments.
+								delete (block as { partialJson?: string }).partialJson;
+								stream.push({
+									type: "toolcall_end",
+									contentIndex: index,
+									toolCall: block,
+									partial: output,
+								});
+							}
 						}
-					} else if (event.delta.type === "thinking_delta") {
-						const index = blocks.findIndex((b) => b.index === event.index);
-						const block = blocks[index];
-						if (block && block.type === "thinking") {
-							block.thinking += event.delta.thinking;
-							stream.push({
-								type: "thinking_delta",
-								contentIndex: index,
-								delta: event.delta.thinking,
-								partial: output,
-							});
+					} else if (event.type === "message_delta") {
+						if (event.delta.stop_reason) {
+							const stopReasonResult = mapStopReason(event.delta.stop_reason, event.delta.stop_details);
+							output.stopReason = stopReasonResult.stopReason;
+							if (stopReasonResult.errorMessage) {
+								output.errorMessage = stopReasonResult.errorMessage;
+							}
 						}
-					} else if (event.delta.type === "input_json_delta") {
-						const index = blocks.findIndex((b) => b.index === event.index);
-						const block = blocks[index];
-						if (block && block.type === "toolCall") {
-							block.partialJson += event.delta.partial_json;
-							block.arguments = parseStreamingJson(block.partialJson);
-							stream.push({
-								type: "toolcall_delta",
-								contentIndex: index,
-								delta: event.delta.partial_json,
-								partial: output,
-							});
+						// Only update usage fields if present (not null).
+						// Preserves input_tokens from message_start when proxies omit it in message_delta.
+						if (event.usage.input_tokens != null) {
+							output.usage.input = event.usage.input_tokens;
 						}
-					} else if (event.delta.type === "signature_delta") {
-						const index = blocks.findIndex((b) => b.index === event.index);
-						const block = blocks[index];
-						if (block && block.type === "thinking") {
-							block.thinkingSignature = block.thinkingSignature || "";
-							block.thinkingSignature += event.delta.signature;
+						if (event.usage.output_tokens != null) {
+							output.usage.output = event.usage.output_tokens;
 						}
-					}
-				} else if (event.type === "content_block_stop") {
-					const index = blocks.findIndex((b) => b.index === event.index);
-					const block = blocks[index];
-					if (block) {
-						delete (block as any).index;
-						if (block.type === "text") {
-							stream.push({
-								type: "text_end",
-								contentIndex: index,
-								content: block.text,
-								partial: output,
-							});
-						} else if (block.type === "thinking") {
-							stream.push({
-								type: "thinking_end",
-								contentIndex: index,
-								content: block.thinking,
-								partial: output,
-							});
-						} else if (block.type === "toolCall") {
-							block.arguments = parseStreamingJson(block.partialJson);
-							// Finalize in-place and strip the scratch buffer so replay only
-							// carries parsed arguments.
-							delete (block as { partialJson?: string }).partialJson;
-							stream.push({
-								type: "toolcall_end",
-								contentIndex: index,
-								toolCall: block,
-								partial: output,
-							});
+						if (event.usage.cache_read_input_tokens != null) {
+							output.usage.cacheRead = event.usage.cache_read_input_tokens;
 						}
-					}
-				} else if (event.type === "message_delta") {
-					if (event.delta.stop_reason) {
-						const stopReasonResult = mapStopReason(event.delta.stop_reason, event.delta.stop_details);
-						output.stopReason = stopReasonResult.stopReason;
-						if (stopReasonResult.errorMessage) {
-							output.errorMessage = stopReasonResult.errorMessage;
+						if (event.usage.cache_creation_input_tokens != null) {
+							output.usage.cacheWrite = event.usage.cache_creation_input_tokens;
 						}
+						// Anthropic reports reasoning tokens in `output_tokens_details.thinking_tokens` on the
+						// final message_delta usage (a subset of output_tokens). SDK 0.91.1 omits the field from
+						// its Usage type, so read it through a narrow cast. Verified against the live API.
+						const thinkingTokens = (event.usage as { output_tokens_details?: { thinking_tokens?: number } })
+							.output_tokens_details?.thinking_tokens;
+						if (thinkingTokens != null) {
+							output.usage.reasoning = thinkingTokens;
+						}
+						// Anthropic doesn't provide total_tokens, compute from components
+						output.usage.totalTokens =
+							output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
+						calculateCost(model, output.usage);
+						// GATE-ONLY: mirror the Rust decoder's message_meta("delta") at this set-point
+						// (stopReason + errorMessage-if-any + merged usage incl. reasoning iff set). This line
+						// is reached only when the message_delta arm completes; mapStopReason throws first for
+						// an unhandled stop reason, so that path emits no delta-meta (matches Rust early-return).
+						options?.onMeta?.({
+							phase: "delta",
+							stopReason: output.stopReason,
+							...(output.errorMessage !== undefined ? { errorMessage: output.errorMessage } : {}),
+							usage: {
+								input: output.usage.input,
+								output: output.usage.output,
+								cacheRead: output.usage.cacheRead,
+								cacheWrite: output.usage.cacheWrite,
+								...(output.usage.cacheWrite1h !== undefined ? { cacheWrite1h: output.usage.cacheWrite1h } : {}),
+								...(output.usage.reasoning !== undefined ? { reasoning: output.usage.reasoning } : {}),
+								totalTokens: output.usage.totalTokens,
+							},
+						});
 					}
-					// Only update usage fields if present (not null).
-					// Preserves input_tokens from message_start when proxies omit it in message_delta.
-					if (event.usage.input_tokens != null) {
-						output.usage.input = event.usage.input_tokens;
-					}
-					if (event.usage.output_tokens != null) {
-						output.usage.output = event.usage.output_tokens;
-					}
-					if (event.usage.cache_read_input_tokens != null) {
-						output.usage.cacheRead = event.usage.cache_read_input_tokens;
-					}
-					if (event.usage.cache_creation_input_tokens != null) {
-						output.usage.cacheWrite = event.usage.cache_creation_input_tokens;
-					}
-					// Anthropic reports reasoning tokens in `output_tokens_details.thinking_tokens` on the
-					// final message_delta usage (a subset of output_tokens). SDK 0.91.1 omits the field from
-					// its Usage type, so read it through a narrow cast. Verified against the live API.
-					const thinkingTokens = (event.usage as { output_tokens_details?: { thinking_tokens?: number } })
-						.output_tokens_details?.thinking_tokens;
-					if (thinkingTokens != null) {
-						output.usage.reasoning = thinkingTokens;
-					}
-					// Anthropic doesn't provide total_tokens, compute from components
-					output.usage.totalTokens =
-						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-					calculateCost(model, output.usage);
-					// GATE-ONLY: mirror the Rust decoder's message_meta("delta") at this set-point
-					// (stopReason + errorMessage-if-any + merged usage incl. reasoning iff set). This line
-					// is reached only when the message_delta arm completes; mapStopReason throws first for
-					// an unhandled stop reason, so that path emits no delta-meta (matches Rust early-return).
-					options?.onMeta?.({
-						phase: "delta",
-						stopReason: output.stopReason,
-						...(output.errorMessage !== undefined ? { errorMessage: output.errorMessage } : {}),
-						usage: {
-							input: output.usage.input,
-							output: output.usage.output,
-							cacheRead: output.usage.cacheRead,
-							cacheWrite: output.usage.cacheWrite,
-							...(output.usage.cacheWrite1h !== undefined ? { cacheWrite1h: output.usage.cacheWrite1h } : {}),
-							...(output.usage.reasoning !== undefined ? { reasoning: output.usage.reasoning } : {}),
-							totalTokens: output.usage.totalTokens,
-						},
-					});
 				}
 			}
 
@@ -786,6 +1041,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+			// A flag-ON Rust adapter throw (not a load failure — that already fell back to TS) reaches
+			// here as a normal stream error; tag it adapter-origin for prod attribution. Abort-origin
+			// (signal.aborted) is reported as the served path, not as an adapter error.
+			if (servedBy === "rust") {
+				await options?.onPath?.({ path: "rust", ...(options?.signal?.aborted ? {} : { error: "adapter" }) });
+			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
