@@ -9,8 +9,18 @@
 - When the user asks a question, answer it first before making edits or running implementation commands.
 - When responding to user feedback or an analysis, explicitly say whether you agree or disagree before saying what you changed.
 
+## Engineering Mindset
+
+- Build understanding from first principles; prefer small readable systems, and make complexity earn its place.
+- Start with simple baselines, inspect data/state directly, verify assumptions, test tiny or representative cases first, and add sophistication incrementally.
+- Use AI aggressively for prototyping, exploration, scaffolding, and routine work, but do not confuse generation with correctness. Keep clear specs, review diffs, run tests/evals, consider security, and own the final result.
+- For agentic work, treat prompts, context, tools, memory, artifacts, and evaluations as part of the program. Keep workflows observable, preserve evidence, expose uncertainty, and prefer inspectable artifacts over hidden magic.
+
 ## Code Quality
 
+- Use the installed `karpathy-guidelines` skill when writing, reviewing, or refactoring code.
+- Use the `modern-software-engineering` skill for architecture, refactoring, code review, test strategy, delivery/process improvements, and dynamic workflow design.
+- Use the `ai-assisted-engineering` skill when deciding how much to delegate to AI, whether generated output can be trusted, or how to design/orchestrate dynamic workflows.
 - Read files in full before wide-ranging changes, before editing files you have not fully inspected, and when asked to investigate or audit. Do not rely on search snippets for broad changes.
 - No `any` unless absolutely necessary.
 - Inline single-line helpers that have only one call site.
@@ -23,6 +33,28 @@
 - Never hardcode key checks (e.g. `matchesKey(keyData, "ctrl+x")`). Add defaults to `DEFAULT_EDITOR_KEYBINDINGS` or `DEFAULT_APP_KEYBINDINGS` so they stay configurable.
 - Never modify `packages/ai/src/models.generated.ts` directly; update `packages/ai/scripts/generate-models.ts` instead, then regenerate. Including the resulting `models.generated.ts` diff is always OK, even if regeneration includes unrelated upstream model metadata changes.
 
+## Model Selection
+
+- When a task or workflow specifies the `openai` provider, use Codex models.
+- When a task or workflow specifies the `anthropic` provider, use Claude models.
+
+## Ultracode / Dynamic Workflows
+
+- For broad, high-confidence, or repo-wide tasks, use dynamic workflows only when they earn their cost: scale, exhaustiveness, independent verification, or more context than one window.
+- Scout inline first with cheap read-only probes to discover the real work-list.
+- Prefer fresh task-specific drafts under gitignored `.pi/workflows/drafts/<slug>.js`; reuse an existing workflow only when it exactly matches the task.
+- Graph/start workflows in background with explicit `concurrency` and `maxAgents`, then inspect artifacts before trusting conclusions.
+- Subagents get `web_search` and `context7-cli` by default when installed; opt out only when isolation is required.
+- Attach an `agentType` persona (`explore`/`researcher`/`planner`/`architect`/`implementer`/`reviewer`) for role-appropriate defaults; explicit options always win.
+
+## Pi Dynamic Workflows Setup / Onboarding
+
+- For a fresh `pi-dynamic-workflows` clone, treat that repo's README "Quickstart" and `scripts/doctor.mjs` as authoritative; do not invent versions or setup steps.
+- Start with `npm run doctor` from the repo root to identify missing mandatory and optional prerequisites.
+- Use the ordered setup only when onboarding that harness: `nvm install && nvm use`, install the global Pi runtime, `npm install`, `npm run doctor`, `npm test`, then `pi install ./` for use in other projects.
+- The `karpathy-guidelines` skill is external/community content, not vendored by `pi-dynamic-workflows`; install it into Pi/Claude skill dirs when that repo expects it.
+- In target projects, trust/reload Pi after installing extensions (`/trust`, `/reload`); project-scoped workflows are trust-gated.
+
 ## Commands
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
@@ -32,6 +64,7 @@
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
 - Put issue-specific regressions under `packages/coding-agent/test/suite/regressions/` named `<issue-number>-<short-slug>.test.ts`.
 - For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
+- Prefer gitignored `.pi/tmp/` for repo-local scratch files; do not commit throwaway temp files.
 - Never commit unless the user asks.
 
 ## Dependency and Install Security
@@ -54,6 +87,8 @@ Committing:
 - Before committing, run `git status` and verify you are only staging your files.
 - `packages/ai/src/models.generated.ts` may always be included alongside your files.
 - Message format: `{feat,fix,docs}[(ai,tui,agent,coding-agent)]: <commit message> (optionally multiple lines)`. Message is informative and concise.
+- Keep commits atomic: each commit should contain one coherent change and its related docs/tests only.
+- Never add a `Co-Authored-By:` trailer or any tool-attribution line (e.g. `Generated with Claude`) to commit messages or PR bodies.
 
 Never run (destroys other agents' work or bypasses checks):
 
@@ -64,6 +99,7 @@ If rebase conflicts occur:
 - Resolve conflicts only in files you modified.
 - If a conflict is in a file you did not modify, abort and ask the user.
 - Never force push.
+- Never `git commit --amend` blindly: concurrent Pi sessions/tabs can land a commit on top of yours, so `HEAD` may not be the commit you think. Check `git log`/`git reflog` first, and only amend a commit you are certain is your own and is still `HEAD`.
 
 ## Issues and PRs
 
