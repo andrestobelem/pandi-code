@@ -48,6 +48,7 @@ Multiple pi sessions may be running in this cwd at the same time, each modifying
 
 Committing:
 
+- Committing directly to `main` is allowed in this repo; you do not need to branch first.
 - Only commit files YOU changed in THIS session.
 - Stage explicit paths (`git add <path1> <path2>`); never `git add -A` / `git add .`.
 - Before committing, run `git status` and verify you are only staging your files.
