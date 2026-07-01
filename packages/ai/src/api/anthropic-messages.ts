@@ -74,7 +74,8 @@ let warnedRustOffNonNode = false;
 let warnedRustLoadFailed = false;
 
 /**
- * Resolve whether the Rust streaming decoder is enabled for this stream. DEFAULT OFF.
+ * Resolve whether the Rust streaming decoder is enabled for this stream. DEFAULT ON when the
+ * runtime can load the Rust glue.
  *
  * Kill-switch (Decision C): an EXPLICIT process.env PI_RUST_STREAMING in {"0","false"} force-OFF
  * wins over options.env. getProviderEnvValue (provider-env.ts) resolves env?.[name] BEFORE
@@ -102,9 +103,9 @@ function resolveRustStreaming(env?: ProviderEnv): boolean {
 		}
 		return false;
 	}
-	// (3) opt-in via options.env or process.env (truthy "1"/"true"); default OFF.
+	// (3) default ON. options.env/process.env can still force OFF via "0"/"false" above.
 	const v = getProviderEnvValue("PI_RUST_STREAMING", env);
-	return v === "1" || v === "true";
+	return v !== "0" && v !== "false";
 }
 
 // Stealth mode: Mimic Claude Code's tool naming exactly
@@ -304,7 +305,7 @@ export interface AnthropicOptions extends StreamOptions {
 	 * Production observability (NOT gate-only). Invoked once per stream with which path served it
 	 * ("rust" | "ts"), tagged error:"adapter" when a flag-ON Rust adapter throw reached the catch.
 	 * Lets an on-call answer "is PI_RUST_STREAMING actually serving here?" and "did it silently fall
-	 * back to TS?". Default undefined => no-op, so default-OFF behavior is unchanged.
+	 * back to TS?". Default undefined => no-op.
 	 */
 	onPath?: (info: { path: "rust" | "ts"; error?: "adapter" }) => void | Promise<void>;
 }
@@ -850,7 +851,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
 
-			// PI_RUST_STREAMING fork (default-OFF). When ON and the glue loads, the Rust incremental
+			// PI_RUST_STREAMING fork (default-ON). When the glue loads, the Rust incremental
 			// decoder drives the stream instead of the TS for-await loop below; both paths mutate the
 			// SAME `output`/`blocks` and fall through into the shared terminal/catch (abort-first +
 			// done/error) below — the adapter never duplicates that logic.

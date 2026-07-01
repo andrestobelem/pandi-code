@@ -1,7 +1,7 @@
 // PI_RUST_STREAMING flag-gate equivalence test (the key verification for the production swap).
 //
 // Drives the REAL anthropic stream() twice over each recorded golden row's byte chunks — OFF
-// (options.env = {}) vs ON (options.env = { PI_RUST_STREAMING: "1" }) — via the same options.client
+// (options.env = { PI_RUST_STREAMING: "0" }) vs ON (default/env = { PI_RUST_STREAMING: "1" }) — via the same options.client
 // seam the gate harness uses, and asserts the two are behavior-equivalent:
 //   - the drained event SEQUENCE (type + key-set + contentIndex/delta/content/reason); the aliased
 //     per-event {partial} snapshot is excluded (consumer-drain timing artifact — the contract-gate
@@ -91,7 +91,10 @@ describe("PI_RUST_STREAMING flag-gate equivalence (OFF vs ON over recorded golde
 		it(`'${row.name}' is behavior-equivalent OFF vs ON`, async () => {
 			const model = getModel("anthropic", "claude-haiku-4-5");
 
-			const offStream = streamAnthropic(model, context, { client: fakeClient(row.chunks), env: {} });
+			const offStream = streamAnthropic(model, context, {
+				client: fakeClient(row.chunks),
+				env: { PI_RUST_STREAMING: "0" },
+			});
 			const offEvents = await drain(offStream);
 			const offFinal = settled(await offStream.result());
 
@@ -119,7 +122,7 @@ describe("PI_RUST_STREAMING flag-gate safety properties", () => {
 			const s = streamAnthropic(model, context, { client: fakeClient(row.chunks), env, signal: ac.signal });
 			return drain(s);
 		}
-		const off = await run({});
+		const off = await run({ PI_RUST_STREAMING: "0" });
 		const on = await run({ PI_RUST_STREAMING: "1" });
 		const term = (evs: AssistantMessageEvent[]) =>
 			evs[evs.length - 1] as { type: string; reason?: string; error?: AssistantMessage };
@@ -131,8 +134,21 @@ describe("PI_RUST_STREAMING flag-gate safety properties", () => {
 
 	it("flag-OFF performs ZERO wasm load", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
-		await drain(streamAnthropic(model, context, { client: fakeClient(golden[0].chunks), env: {} }));
+		await drain(
+			streamAnthropic(model, context, {
+				client: fakeClient(golden[0].chunks),
+				env: { PI_RUST_STREAMING: "0" },
+			}),
+		);
 		expect(loadRustStreaming).not.toHaveBeenCalled();
+	});
+
+	it("serves Rust by default when the glue is available", async () => {
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const onPath = vi.fn();
+		await drain(streamAnthropic(model, context, { client: fakeClient(golden[0].chunks), onPath }));
+		expect(onPath).toHaveBeenCalledTimes(1);
+		expect(onPath).toHaveBeenCalledWith({ path: "rust" });
 	});
 
 	it("calls onPath exactly ONCE on a clean Rust-served stream", async () => {
@@ -217,7 +233,10 @@ describe("PI_RUST_STREAMING flag-gate safety properties", () => {
 		const chunks = [Array.from(enc.encode(wire))];
 		const model = getModel("anthropic", "claude-haiku-4-5");
 
-		const off = await streamAnthropic(model, context, { client: fakeClient(chunks), env: {} }).result();
+		const off = await streamAnthropic(model, context, {
+			client: fakeClient(chunks),
+			env: { PI_RUST_STREAMING: "0" },
+		}).result();
 		const on = await streamAnthropic(model, context, {
 			client: fakeClient(chunks),
 			env: { PI_RUST_STREAMING: "1" },
@@ -261,7 +280,10 @@ describe("PI_RUST_STREAMING flag-gate safety properties", () => {
 		const chunks = [Array.from(enc.encode(wire))];
 		const model = getModel("anthropic", "claude-haiku-4-5");
 
-		const off = await streamAnthropic(model, context, { client: fakeClient(chunks), env: {} }).result();
+		const off = await streamAnthropic(model, context, {
+			client: fakeClient(chunks),
+			env: { PI_RUST_STREAMING: "0" },
+		}).result();
 		const on = await streamAnthropic(model, context, {
 			client: fakeClient(chunks),
 			env: { PI_RUST_STREAMING: "1" },
@@ -360,7 +382,12 @@ describe("PI_RUST_STREAMING flag-gate safety properties", () => {
 
 	it("a load failure DOES fall back to the TS path", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
-		const off = await drain(streamAnthropic(model, context, { client: fakeClient(golden[0].chunks), env: {} }));
+		const off = await drain(
+			streamAnthropic(model, context, {
+				client: fakeClient(golden[0].chunks),
+				env: { PI_RUST_STREAMING: "0" },
+			}),
+		);
 		vi.mocked(loadRustStreaming).mockImplementationOnce(() => {
 			throw new Error("glue not found");
 		});

@@ -168,6 +168,7 @@ export async function decodeTranscript(byteChunks: number[][]): Promise<{
 	const metas: { phase: "start" | "delta"; rec: Record<string, unknown> }[] = [];
 	const stream = streamAnthropic(model, context, {
 		client: fakeClient(response),
+		env: { PI_RUST_STREAMING: "0" },
 		onMeta: (m) => metas.push({ phase: m.phase, rec: normMeta(m) }),
 	});
 	const events: Record<string, unknown>[] = [];

@@ -20,12 +20,45 @@
 // fs.readFileSync to redirect that read to process.execPath-adjacent + cwd fallbacks, active only
 // across the require(), then restore. Pair with coding-agent's copy-binary-assets shipping the
 // wasm next to the bun binary.
-import { createRequire } from "node:module";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+interface NodeModuleBuiltin {
+	createRequire(url: string): (id: string) => unknown;
+}
 
-const require = createRequire(import.meta.url);
-const fs = require("node:fs") as typeof import("node:fs");
+interface NodePathBuiltin {
+	dirname(path: string): string;
+	join(...parts: string[]): string;
+}
+
+interface NodeUrlBuiltin {
+	fileURLToPath(url: string | URL): string;
+}
+
+interface NodeFsBuiltin {
+	existsSync(path: string): boolean;
+	readFileSync(path: string | URL, options?: BufferEncoding): string;
+	readFileSync(path: string | URL, options?: undefined): Buffer;
+}
+
+interface ProcessWithBuiltins {
+	getBuiltinModule?(id: string): unknown;
+}
+
+function getBuiltin<T>(id: string): T {
+	const proc = typeof process !== "undefined" ? (process as unknown as ProcessWithBuiltins) : undefined;
+	const builtin = proc?.getBuiltinModule?.(id);
+	if (!builtin) throw new Error(`Node builtin module '${id}' is unavailable`);
+	return builtin as T;
+}
+
+function getNodeBuiltins() {
+	const moduleBuiltin = getBuiltin<NodeModuleBuiltin>("module");
+	return {
+		fs: getBuiltin<NodeFsBuiltin>("fs"),
+		path: getBuiltin<NodePathBuiltin>("path"),
+		fileURLToPath: getBuiltin<NodeUrlBuiltin>("url").fileURLToPath,
+		require: moduleBuiltin.createRequire(import.meta.url),
+	};
+}
 
 const WASM_FILENAME = "ai_streaming_core_bg.wasm";
 const GLUE_FILENAME = "ai_streaming_core.js";
@@ -61,6 +94,7 @@ let loadFailure: Error | null = null; // negative cache: once load fails, fail f
  *      commonjs sidecar (a flat execDir/glue.js would be mis-resolved as ESM and fail to require).
  */
 export function glueCandidates(): string[] {
+	const { path, fileURLToPath } = getNodeBuiltins();
 	const here = path.dirname(fileURLToPath(import.meta.url)); // dist/api or src/api
 	const candidates = [
 		path.join(here, "..", "wasm", GLUE_FILENAME), // dist/api -> dist/wasm (prod)
@@ -75,6 +109,7 @@ export function glueCandidates(): string[] {
 }
 
 function fallbackWasmPaths(): string[] {
+	const { path } = getNodeBuiltins();
 	const execDir = path.dirname(process.execPath);
 	return [
 		path.join(execDir, WASM_FILENAME),
@@ -85,6 +120,7 @@ function fallbackWasmPaths(): string[] {
 
 // photon.ts:54-110, narrowed to our wasm filename: redirect the glue's __dirname-baked readFileSync.
 function patchWasmRead(): () => void {
+	const { fs, fileURLToPath } = getNodeBuiltins();
 	const original = fs.readFileSync.bind(fs);
 	const fallbacks = fallbackWasmPaths();
 	const mut = fs as { readFileSync: typeof fs.readFileSync };
@@ -127,6 +163,7 @@ function patchWasmRead(): () => void {
 export function loadRustStreaming(): RustStreamingGlue {
 	if (cached) return cached;
 	if (loadFailure) throw loadFailure; // negative cache: don't re-read 236KB + recompile on every ON stream
+	const { fs, require } = getNodeBuiltins();
 	const restore = patchWasmRead();
 	try {
 		let lastErr: unknown;

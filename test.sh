@@ -74,5 +74,8 @@ unset AWS_CONTAINER_CREDENTIALS_FULL_URI
 unset AWS_WEB_IDENTITY_TOKEN_FILE
 unset BEDROCK_EXTENSIVE_MODEL_TEST
 
+echo "Running Rust black-box tests without API keys..."
+cargo test --manifest-path rust/blackbox-tests/Cargo.toml
+
 echo "Running tests without API keys..."
 npm test
