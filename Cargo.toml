@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "packages/ai/native/ai-streaming-core",
+    "rust/blackbox-tests",
+]
+resolver = "2"
