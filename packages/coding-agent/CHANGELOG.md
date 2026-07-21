@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the Pandi CLI identity, `.pandi` configuration directory, and cross-platform source launchers ([#1](https://github.com/andrestobelem/pandi-code/issues/1)).
+
 ## [0.81.0] - 2026-07-21
 
 ### New Features
