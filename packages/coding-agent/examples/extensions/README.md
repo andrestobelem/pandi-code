@@ -6,10 +6,10 @@ Example extensions for pi-coding-agent.
 
 ```bash
 # Load an extension with --extension flag
-pi --extension examples/extensions/permission-gate.ts
+pandi --extension examples/extensions/permission-gate.ts
 
 # Or copy to extensions directory for auto-discovery
-cp permission-gate.ts ~/.pi/agent/extensions/
+cp permission-gate.ts ~/.pandi/agent/extensions/
 ```
 
 ## Examples
@@ -128,7 +128,7 @@ cp permission-gate.ts ~/.pi/agent/extensions/
 | Extension | Description |
 |-----------|-------------|
 | `custom-provider-anthropic/` | Custom Anthropic provider with OAuth support and custom streaming implementation |
-| `custom-provider-gitlab-duo/` | GitLab Duo provider using pi-ai's built-in Anthropic/OpenAI streaming via proxy |
+| `custom-provider-gitlab-duo/` | GitLab Duo provider using Pandi-ai's built-in Anthropic/OpenAI streaming via proxy |
 
 ### External Dependencies
 
@@ -142,7 +142,7 @@ cp permission-gate.ts ~/.pi/agent/extensions/
 See [docs/extensions.md](../../docs/extensions.md) for full documentation.
 
 ```typescript
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "pandi-code";
 import { Type } from "typebox";
 
 export default function (pi: ExtensionAPI) {

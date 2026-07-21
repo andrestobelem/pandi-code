@@ -1,102 +1,96 @@
-# Contributing to pi
+# Contributing to Pandi
 
-This guide exists to save both sides time.
+This guide exists to save contributors and maintainers time.
 
 ## Philosophy
 
-First things first: **pi's core is minimal**.
-
-If your feature does not belong in the core, it should be an extension. PRs that bloat the core will likely be rejected.
-
-Pi's core exists to be minimal and to be extensible so that it can be influenced and manipulated by extensions.  Even hook points for extensions however should be well considered and discussed to avoid adding unmaintainable bloat and complex interactions.
+Pandi's core is intentionally minimal. Workflow-specific features should usually be extensions. New core behavior and extension hooks must be discussed carefully to avoid unmaintainable interactions.
 
 ## The One Rule
 
-**You must understand your code.** If you cannot explain what your changes do and how they interact with the rest of the system, your PR will be closed.
+**You must understand your code.** If you cannot explain what your changes do and how they interact with the rest of the system, your pull request will be closed.
 
-Using AI to write code is fine. Submitting AI-generated slop without understanding it is not.
+Using AI to write code is fine. Submitting generated changes without understanding them is not.
 
-If you use an agent, run it from the `pi` root directory so it picks up `AGENTS.md` automatically. Your agent must follow the rules and guidelines in that file.
+If you use an agent, run it from the `pandi-code` repository root so it loads `AGENTS.md` automatically. The agent must follow the rules in that file.
 
 ## Contribution Gate
 
-All issues and PRs from new contributors are auto-closed by default.
-
-Issues submitted Friday through Sunday are not guaranteed to be reviewed.  If something is urgent, ask on Discord: https://discord.com/invite/3cU7Bz4UPx
-
-Maintainers review auto-closed issues daily and reopen worthwhile ones. Issues that do not meet the quality bar below will not be reopened or receive a reply.
+All issues and pull requests from new contributors are auto-closed by default. Maintainers review auto-closed issues and reopen worthwhile ones.
 
 Approval happens through maintainer replies on issues:
 
-- `lgtmi`: your future issues will not be auto-closed
-- `lgtm`: your future issues and PRs will not be auto-closed
+- `lgtmi`: future issues will not be auto-closed
+- `lgtm`: future issues and pull requests will not be auto-closed
 
-`lgtmi` does not grant rights to submit PRs. Only `lgtm` grants rights to submit PRs.
+`lgtmi` does not grant approval to submit pull requests. Only `lgtm` does.
 
-## Quality Bar For Issues
+## Quality Bar for Issues
 
-If you open an issue, you must use one of the two GitHub issue templates.
+Use one of the repository's GitHub issue templates. Keep reports short, concrete, and worth reading.
 
-If you open an issue, keep it short, concrete, and worth reading.
-
-- Keep it concise. If it does not fit on one screen, it is too long.
-- Write in your own voice (do not use an LLM to generate text, if you must, follow up with a clearly AI labeled comment).
 - State the bug or request clearly.
 - Explain why it matters.
-- If you want to implement the change yourself, say so.
+- Include minimal reproduction steps and relevant logs for bugs.
+- Say whether you want to implement the change.
+- Write in your own voice. Clearly label AI-generated content.
 
-If the issue is real and written well, a maintainer may reopen it, reply `lgtmi`, or reply `lgtm`.
+Low-signal, unclear, duplicate, or automated bulk reports may be closed without a reply. Accounts that repeatedly ignore this guide or spam the tracker may be blocked.
 
-## Blocking
+## Before Submitting a Pull Request
 
-If you ignore this document twice, or if you spam the tracker with agent-generated issues, your GitHub account will be permanently blocked.
+Do not open a pull request unless a maintainer has approved you with `lgtm`.
 
-If you send a large volume of issues through automation, your GitHub account will be permanently blocked. No taksies backsies.
+Keep each change focused on one issue. Link the originating issue and explain both the behavior change and the validation performed.
 
-## Before Submitting a PR
+## Development Setup
 
-Do not open a PR unless you have already been approved with `lgtm`.
+```bash
+git clone https://github.com/andrestobelem/pandi-code.git
+cd pandi-code
+npm install --ignore-scripts
+npm run build:offline
+```
 
-Before submitting a PR:
+Run Pandi from source:
+
+```bash
+./pandi-test.sh
+```
+
+Windows launchers are `pandi-test.bat` and `pandi-test.ps1`.
+
+## Validation
+
+Before submitting a pull request:
 
 ```bash
 npm run check
 ./test.sh
 ```
 
-Both must pass.
+When changing a test file, run that focused test while developing. Do not run endpoint-dependent tests with real provider credentials unless the task explicitly requires them.
 
-Do not edit `CHANGELOG.md`. Changelog entries are added by maintainers.
+Do not edit released changelog sections. New entries belong under `## [Unreleased]` and must follow the rules in `AGENTS.md`.
 
-If you are adding a new provider to `packages/ai`, see `AGENTS.md` for required tests.
+## Security
 
-## Questions?
+Do not open public issues for vulnerabilities. Follow [SECURITY.md](SECURITY.md).
 
-Ask on [Discord](https://discord.com/invite/nKXTsAcmbT).
+## Upstream Changes
+
+Pandi is derived from [Earendil Works Pi](https://github.com/earendil-works/pi). When porting an upstream change, retain relevant attribution and links to the upstream issue or pull request.
 
 ## FAQ
 
-### Why are new issues and PRs auto-closed?
+### Why are new issues and pull requests auto-closed?
 
-pi receives more issues than the maintainers can responsibly review in real time. Many reports do not meet the quality bar in this guide or do not follow CONTRIBUTING.md. Some are slung at the repository mindlessly via an agent instead of being reviewed and shaped by the person submitting them. Auto-closing creates a buffer so maintainers can review the tracker on their own schedule and reopen the issues that meet the quality bar.
+The gate lets maintainers review the tracker on their own schedule and protects the project from low-effort automated submissions. Short, reproducible reports and thoughtful contributions are welcome.
 
-### Why are weekend issues lower priority?
+### Why do some issues receive no reply?
 
-We triage the tracker during working hours. That means more issues can accumulate over the weekend. Anything submitted Friday through Sunday may be missed or given lower priority in the Monday review queue. If a problem is urgent, ask on Discord and include the short version, a repro, and the relevant logs.
+A reply is maintenance work. Maintainers prioritize reproducible bugs, concrete requests, and contributors who make reports actionable.
 
-### Why do some issues get no reply?
+### Can AI help with contributions?
 
-A reply is maintenance work too. Low-signal issues, unclear reports, duplicates, and issues that do not follow this guide may be closed without discussion. This keeps time available for reproducible bugs, thoughtful requests, and contributors who have done the work to make their report actionable.
-
-### Why not let AI triage everything?
-
-AI can help group duplicates, summarize reports, and spot missing information. It is not trusted to make final maintainer decisions. Polished AI-generated issues can still be wrong, misleading, or expensive to investigate. Human review remains the final gate.
-
-### Is this hostile to contributors?
-
-No. It is a guardrail against burnout and tracker spam. Short, concrete, reproducible issues are welcome. Thoughtful contributions are welcome. Automated slop, entitlement, and large volumes of low-effort reports are not.
-
-## Where can I learn about plans?
-
-Earendil uses RFCs to discuss larger changes.  Not all of them are public, but
-quite a few are.  They can be found at [rfc.earendil.com](https://rfc.earendil.com/keyword/pi/).
+Yes, but the contributor remains responsible for verifying, understanding, and clearly labeling generated content. Human review remains the final gate.

@@ -1,38 +1,42 @@
 # Development
 
-See [AGENTS.md](https://github.com/earendil-works/pi-mono/blob/main/AGENTS.md) for additional guidelines.
+See [AGENTS.md](https://github.com/andrestobelem/pandi-code/blob/main/AGENTS.md) for additional guidelines.
 
 ## Setup
 
 ```bash
-git clone https://github.com/earendil-works/pi-mono
-cd pi-mono
-npm install
-npm run build
+git clone https://github.com/andrestobelem/pandi-code.git
+cd pandi-code
+npm install --ignore-scripts
+npm run build:offline
 ```
 
 Run from source:
 
 ```bash
-/path/to/pi-mono/pi-test.sh
+/path/to/pandi-code/pandi-test.sh
 ```
 
-The script can be run from any directory. Pi keeps the caller's current working directory.
+The script can be run from any directory. Pandi keeps the caller's current working directory.
 
-## Forking / Rebranding
+## Application identity
 
-Configure via `package.json`:
+The installable application metadata lives in `packages/coding-agent/package.json`:
 
 ```json
 {
+  "name": "pandi-code",
   "piConfig": {
-    "name": "pi",
-    "configDir": ".pi"
+    "name": "pandi",
+    "configDir": ".pandi"
+  },
+  "bin": {
+    "pandi": "dist/cli.js"
   }
 }
 ```
 
-Change `name`, `configDir`, and `bin` field for your fork. Affects CLI banner, config paths, and environment variable names.
+The retained `piConfig` property controls the CLI banner, config paths, and derived environment-variable names.
 
 ## Path Resolution
 
@@ -48,16 +52,16 @@ Never use `__dirname` directly for package assets.
 
 ## Debug Command
 
-`/debug` (hidden) writes to `~/.pi/agent/pi-debug.log`:
+`/debug` (hidden) writes to `~/.pandi/agent/pandi-debug.log`:
 - Rendered TUI lines with ANSI codes
 - Last messages sent to the LLM
 
 ## Testing
 
 ```bash
-./test.sh                         # Run non-LLM tests (no API keys needed)
-npm test                          # Run all tests
-npm test -- test/specific.test.ts # Run specific test
+./test.sh                         # Run all non-e2e tests
+cd packages/coding-agent
+node node_modules/vitest/dist/cli.js --run test/specific.test.ts
 ```
 
 ## Project Structure

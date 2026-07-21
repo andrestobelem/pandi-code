@@ -9,6 +9,7 @@
 ### Changed
 
 - Packaged the application as `pandi-code` with `pandi` Node and Bun release artifacts, isolated from official Pi updates and announcements ([#2](https://github.com/andrestobelem/pandi-code/issues/2)).
+- Rebranded user-facing documentation, contribution workflows, project resources, and examples for Pandi ([#3](https://github.com/andrestobelem/pandi-code/issues/3)).
 
 ## [0.81.0] - 2026-07-21
 
