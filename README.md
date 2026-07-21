@@ -21,8 +21,10 @@ See the [quickstart](packages/coding-agent/docs/quickstart.md) for authenticatio
 | **[@earendil-works/pi-ai](packages/ai)** | Retained upstream multi-provider LLM API |
 | **[@earendil-works/pi-agent-core](packages/agent)** | Retained upstream agent runtime |
 | **[@earendil-works/pi-tui](packages/tui)** | Retained upstream terminal UI library |
+| **[@earendil-works/pi-storage-sqlite-node](packages/storage/sqlite-node)** | Retained upstream SQLite storage adapter |
+| **[@earendil-works/pi-server](packages/server)** | Unpublished experimental server workspace |
 
-The internal `@earendil-works/*` package names remain unchanged for compatibility. See issue [#4](https://github.com/andrestobelem/pandi-code/issues/4) for the namespace evaluation.
+Reusable `@earendil-works/*` libraries remain upstream dependencies and are not published by Pandi. See [ADR-0001](docs/adr/0001-consume-upstream-pi-packages.md) for the package inventory and namespace decision.
 
 ## Documentation
 

@@ -34,11 +34,17 @@ describe("Pandi distribution packaging", () => {
 
 	it("installs and publishes Pandi-named local release artifacts", () => {
 		const localRelease = readRepoFile("scripts/local-release.mjs");
+		const publishScript = readRepoFile("scripts/publish.mjs");
 		const workflow = readRepoFile(".github/workflows/build-binaries.yml");
 
 		expect(localRelease).toContain('{ directory: "packages/coding-agent", name: "pandi-code" }');
 		expect(localRelease).toContain("function createPandiShim(installDirectory)");
 		expect(localRelease).toContain(`\`pandi-\${platform}.tar.gz\``);
+		expect(publishScript).toContain('{ directory: "packages/coding-agent", name: "pandi-code" }');
+		expect(publishScript).not.toContain('{ directory: "packages/ai"');
+		expect(publishScript).not.toContain('{ directory: "packages/agent"');
+		expect(publishScript).not.toContain('{ directory: "packages/tui"');
+		expect(publishScript).not.toContain('{ directory: "packages/storage/sqlite-node"');
 		expect(workflow).toContain("pandi-darwin-arm64.tar.gz");
 		expect(workflow).toContain("pandi-windows-arm64.zip");
 		expect(workflow).toContain("pandi-code-install-package-lock.json");

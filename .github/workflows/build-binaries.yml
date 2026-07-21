@@ -217,7 +217,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
-          sudo ln -s $(which fdfind) /usr/local/bin/fd
+          sudo ln -s "$(which fdfind)" /usr/local/bin/fd
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
@@ -236,7 +236,7 @@ jobs:
           npm install -g npm@11.16.0 --ignore-scripts
           npm --version
 
-      - name: Publish npm packages
+      - name: Publish pandi-code
         run: node scripts/publish.mjs
 
   publish-github-release:
