@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../src/config.ts", () => ({
+	isOfficialPiDistribution: () => true,
+}));
+
 import {
 	checkForNewPiVersion,
 	comparePackageVersions,

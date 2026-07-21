@@ -1,11 +1,11 @@
 {
-	"name": "@earendil-works/pi-coding-agent",
+	"name": "pandi-code",
 	"version": "0.81.0",
 	"lockfileVersion": 3,
 	"requires": true,
 	"packages": {
 		"": {
-			"name": "@earendil-works/pi-coding-agent",
+			"name": "pandi-code",
 			"version": "0.81.0",
 			"license": "MIT",
 			"dependencies": {

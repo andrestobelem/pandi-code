@@ -10,7 +10,7 @@ const packages = [
 	{ directory: "packages/tui", name: "@earendil-works/pi-tui" },
 	{ directory: "packages/agent", name: "@earendil-works/pi-agent-core" },
 	{ directory: "packages/storage/sqlite-node", name: "@earendil-works/pi-storage-sqlite-node" },
-	{ directory: "packages/coding-agent", name: "@earendil-works/pi-coding-agent" },
+	{ directory: "packages/coding-agent", name: "pandi-code" },
 ];
 
 function printUsage() {
@@ -86,6 +86,7 @@ function run(command, args, options = {}) {
 	const result = spawnSync(command, args, {
 		cwd: options.cwd,
 		encoding: "utf8",
+		env: options.env,
 		shell: process.platform === "win32",
 		stdio: options.capture ? ["inherit", "pipe", "inherit"] : "inherit",
 	});
@@ -112,7 +113,7 @@ function isInsidePath(child, parent) {
 
 function prepareOutputDirectory(options, repoRoot) {
 	if (!options.outDir) {
-		return mkdtempSync(join(tmpdir(), "pi-local-release-"));
+		return mkdtempSync(join(tmpdir(), "pandi-local-release-"));
 	}
 
 	const outDir = resolve(options.outDir);
@@ -161,24 +162,24 @@ function buildBunBinaryRelease(targetDirectory, archiveDirectory) {
 	]);
 	rmSync(targetDirectory, { force: true, recursive: true });
 	cpSync(join(binaryBuildDirectory, platform), targetDirectory, { recursive: true });
-	const archiveName = platform.startsWith("windows-") ? `pi-${platform}.zip` : `pi-${platform}.tar.gz`;
+	const archiveName = platform.startsWith("windows-") ? `pandi-${platform}.zip` : `pandi-${platform}.tar.gz`;
 	cpSync(join(binaryBuildDirectory, archiveName), join(archiveDirectory, archiveName));
 	return platform;
 }
 
-function createPiShim(installDirectory) {
+function createPandiShim(installDirectory) {
 	const binDirectory = join(installDirectory, "node_modules", ".bin");
 	if (process.platform === "win32") {
-		if (existsSync(join(binDirectory, "pi.cmd"))) {
-			writeFileSync(join(installDirectory, "pi.cmd"), '@ECHO off\r\n"%~dp0node_modules\\.bin\\pi.cmd" %*\r\n');
-			writeFileSync(join(installDirectory, "pi.ps1"), '& "$PSScriptRoot/node_modules/.bin/pi.ps1" @args\n');
+		if (existsSync(join(binDirectory, "pandi.cmd"))) {
+			writeFileSync(join(installDirectory, "pandi.cmd"), '@ECHO off\r\n"%~dp0node_modules\\.bin\\pandi.cmd" %*\r\n');
+			writeFileSync(join(installDirectory, "pandi.ps1"), '& "$PSScriptRoot/node_modules/.bin/pandi.ps1" @args\n');
 			return;
 		}
-		writeFileSync(join(installDirectory, "pi.cmd"), '@ECHO off\r\n"%~dp0node_modules\\.bin\\pi.exe" %*\r\n');
-		writeFileSync(join(installDirectory, "pi.ps1"), '& "$PSScriptRoot/node_modules/.bin/pi.exe" @args\n');
+		writeFileSync(join(installDirectory, "pandi.cmd"), '@ECHO off\r\n"%~dp0node_modules\\.bin\\pandi.exe" %*\r\n');
+		writeFileSync(join(installDirectory, "pandi.ps1"), '& "$PSScriptRoot/node_modules/.bin/pandi.exe" @args\n');
 		return;
 	}
-	symlinkSync(join("node_modules", ".bin", "pi"), join(installDirectory, "pi"));
+	symlinkSync(join("node_modules", ".bin", "pandi"), join(installDirectory, "pandi"));
 }
 
 function packPackage(pkg, tarballDirectory) {
@@ -191,7 +192,11 @@ function packPackage(pkg, tarballDirectory) {
 		capture: true,
 		cwd: pkg.directory,
 	});
-	const packed = JSON.parse(output)[0];
+	const packResult = JSON.parse(output);
+	const packed = Array.isArray(packResult) ? packResult[0] : packResult[packageJson.name];
+	if (!packed?.filename) {
+		throw new Error(`npm pack did not return an artifact for ${packageJson.name}`);
+	}
 	return join(tarballDirectory, packed.filename);
 }
 
@@ -243,9 +248,19 @@ if (!options.skipInstall) {
 	);
 	const installPackageJson = `${JSON.stringify({ private: true, dependencies, overrides: dependencies }, undefined, "\t")}\n`;
 	writeFileSync(join(nodeInstallDirectory, "package.json"), installPackageJson);
+	// npm 12 requires allow-scripts to be project-scoped when the user's config defines it.
+	writeFileSync(join(nodeInstallDirectory, ".npmrc"), "allow-scripts=\n");
+	const npmInstallEnv = { ...process.env };
+	delete npmInstallEnv.npm_config_allow_scripts;
+	delete npmInstallEnv.NPM_CONFIG_ALLOW_SCRIPTS;
+	delete npmInstallEnv.npm_config_local_prefix;
+	delete npmInstallEnv.NPM_CONFIG_LOCAL_PREFIX;
 
-	run("npm", ["install", "--omit=dev", "--ignore-scripts"], { cwd: nodeInstallDirectory });
-	createPiShim(nodeInstallDirectory);
+	run("npm", ["install", "--omit=dev", "--ignore-scripts"], {
+		cwd: nodeInstallDirectory,
+		env: npmInstallEnv,
+	});
+	createPandiShim(nodeInstallDirectory);
 
 	if (!options.skipBunInstall) {
 		if (!commandExists("bun")) {
@@ -257,7 +272,7 @@ if (!options.skipInstall) {
 		);
 		writeFileSync(join(bunInstallDirectory, "package.json"), `${JSON.stringify({ private: true, dependencies: bunDependencies, overrides: bunDependencies }, undefined, "\t")}\n`);
 		run("bun", ["install", "--production", "--ignore-scripts"], { cwd: bunInstallDirectory });
-		createPiShim(bunInstallDirectory);
+		createPandiShim(bunInstallDirectory);
 	}
 }
 
@@ -271,19 +286,19 @@ for (const tarball of tarballs.values()) {
 if (!options.skipInstall) {
 	console.log("\nLocal Bun binary release:");
 	console.log(`  ${binaryDirectory}`);
-	console.log(`  ${join(outDir, `pi-${binaryPlatform}.${String(binaryPlatform).startsWith("windows-") ? "zip" : "tar.gz"}`)}`);
+	console.log(`  ${join(outDir, `pandi-${binaryPlatform}.${String(binaryPlatform).startsWith("windows-") ? "zip" : "tar.gz"}`)}`);
 	console.log("\nRun the local Bun binary release from outside the repository:");
-	console.log(`  ${join(binaryDirectory, String(binaryPlatform).startsWith("windows-") ? "pi.exe" : "pi")} --help`);
+	console.log(`  ${join(binaryDirectory, String(binaryPlatform).startsWith("windows-") ? "pandi.exe" : "pandi")} --help`);
 
 	console.log("\nIsolated npm install:");
 	console.log(`  ${nodeInstallDirectory}`);
 	console.log("\nRun the locally packed npm CLI from outside the repository:");
-	console.log(`  ${join(nodeInstallDirectory, process.platform === "win32" ? "pi.cmd" : "pi")} --help`);
+	console.log(`  ${join(nodeInstallDirectory, process.platform === "win32" ? "pandi.cmd" : "pandi")} --help`);
 
 	if (!options.skipBunInstall) {
 		console.log("\nIsolated Bun package install:");
 		console.log(`  ${bunInstallDirectory}`);
 		console.log("\nRun the locally packed Bun package CLI from outside the repository:");
-		console.log(`  ${join(bunInstallDirectory, process.platform === "win32" ? "pi.cmd" : "pi")} --help`);
+		console.log(`  ${join(bunInstallDirectory, process.platform === "win32" ? "pandi.cmd" : "pandi")} --help`);
 	}
 }

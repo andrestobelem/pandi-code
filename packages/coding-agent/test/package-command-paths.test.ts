@@ -473,7 +473,7 @@ describe("package commands", () => {
 	it("uses the update check version for forced self updates even when current", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const projectPrefix = join(tempDir, "project-prefix");
-		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
+		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "pandi-code");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
 		const recordPath = join(tempDir, "self-update.json");
 		mkdirSync(selfPackageDir, { recursive: true });
@@ -569,7 +569,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 		}
 	});
 
-	it("installs the active package name from the update check during self-update", async () => {
+	it("ignores package-name overrides from the npm registry response", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@mariozechner", "pi-coding-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
@@ -595,10 +595,10 @@ else {
 			value: join(selfPackageDir, "dist", "cli.js"),
 			configurable: true,
 		});
-		const activePackageName = PACKAGE_NAME === "@new-scope/pi" ? "@newer-scope/pi" : "@new-scope/pi";
+		const targetVersion = getNewerPatchVersion();
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => Response.json({ packageName: activePackageName, version: "0.73.0" })),
+			vi.fn(async () => Response.json({ packageName: "other-package", version: targetVersion })),
 		);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -610,10 +610,7 @@ else {
 			expect(process.exitCode).toBeUndefined();
 			expect(errorSpy).not.toHaveBeenCalled();
 			const recordedCalls = JSON.parse(readFileSync(recordPath, "utf-8")) as string[][];
-			expect(recordedCalls).toEqual([
-				expect.arrayContaining(["uninstall", "-g", PACKAGE_NAME]),
-				expect.arrayContaining(["install", "-g", `${activePackageName}@0.73.0`]),
-			]);
+			expect(recordedCalls).toEqual([expect.arrayContaining(["install", "-g", `${PACKAGE_NAME}@${targetVersion}`])]);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();
@@ -622,7 +619,7 @@ else {
 
 	it("prints a pnpm metadata hint when self-update fails", async () => {
 		const globalRoot = join(tempDir, "pnpm", "global", "v11");
-		const selfPackageDir = join(globalRoot, "node_modules", "@earendil-works", "pi-coding-agent");
+		const selfPackageDir = join(globalRoot, "node_modules", "pandi-code");
 		const fakeBinDir = join(tempDir, "bin");
 		const fakePnpmPath = join(fakeBinDir, process.platform === "win32" ? "pnpm.cmd" : "pnpm");
 		mkdirSync(selfPackageDir, { recursive: true });
@@ -664,7 +661,7 @@ else {
 		}
 	});
 
-	it("fails self-update when renamed npm package installation fails", async () => {
+	it("fails self-update when the Pandi npm package installation fails", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@mariozechner", "pi-coding-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm-fail.cjs");
@@ -692,10 +689,10 @@ if(args.includes("install")) process.exit(23);
 			value: join(selfPackageDir, "dist", "cli.js"),
 			configurable: true,
 		});
-		const activePackageName = PACKAGE_NAME === "@new-scope/pi" ? "@newer-scope/pi" : "@new-scope/pi";
+		const targetVersion = getNewerPatchVersion();
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => Response.json({ packageName: activePackageName, version: "0.73.0" })),
+			vi.fn(async () => Response.json({ packageName: "other-package", version: targetVersion })),
 		);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -710,10 +707,7 @@ if(args.includes("install")) process.exit(23);
 			expect(stdout).not.toContain(`Updated pandi`);
 			expect(stderr).toContain("exited with code 23");
 			const recordedCalls = JSON.parse(readFileSync(recordPath, "utf-8")) as string[][];
-			expect(recordedCalls).toEqual([
-				expect.arrayContaining(["uninstall", "-g", PACKAGE_NAME]),
-				expect.arrayContaining(["install", "-g", `${activePackageName}@0.73.0`]),
-			]);
+			expect(recordedCalls).toEqual([expect.arrayContaining(["install", "-g", `${PACKAGE_NAME}@${targetVersion}`])]);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();

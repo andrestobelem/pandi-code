@@ -125,24 +125,24 @@ Attribution:
 
 2. **Local smoke test**: build an unpublished release and smoke test from outside the repo (so it can't resolve workspace files):
    ```bash
-   npm run release:local -- --out /tmp/pi-local-release --force
+   npm run release:local -- --out /tmp/pandi-local-release --force
    cd /tmp
 
    # Node package install smoke tests
-   /tmp/pi-local-release/node/pi --help
-   /tmp/pi-local-release/node/pi --version
-   /tmp/pi-local-release/node/pi --list-models
-   /tmp/pi-local-release/node/pi -p "Say exactly: ok"
-   /tmp/pi-local-release/node/pi
+   /tmp/pandi-local-release/node/pandi --help
+   /tmp/pandi-local-release/node/pandi --version
+   /tmp/pandi-local-release/node/pandi --list-models
+   /tmp/pandi-local-release/node/pandi -p "Say exactly: ok"
+   /tmp/pandi-local-release/node/pandi
 
    # Bun binary smoke tests
-   /tmp/pi-local-release/bun/pi --help
-   /tmp/pi-local-release/bun/pi --version
-   /tmp/pi-local-release/bun/pi --list-models
-   /tmp/pi-local-release/bun/pi -p "Say exactly: ok"
-   /tmp/pi-local-release/bun/pi
+   /tmp/pandi-local-release/bun/pandi --help
+   /tmp/pandi-local-release/bun/pandi --version
+   /tmp/pandi-local-release/bun/pandi --list-models
+   /tmp/pandi-local-release/bun/pandi -p "Say exactly: ok"
+   /tmp/pandi-local-release/bun/pandi
    ```
-   Verify both Node and Bun startup, model/account listing, interactive startup, and at least one real prompt with the intended default provider. The bare commands `/tmp/pi-local-release/node/pi` and `/tmp/pi-local-release/bun/pi` start interactive mode; run each in tmux, submit a prompt, and wait for the model reply before considering the interactive smoke test passed. Failures are release blockers unless the user explicitly accepts the risk.
+   Verify both Node and Bun startup, model/account listing, interactive startup, and at least one real prompt with the intended default provider. The bare commands `/tmp/pandi-local-release/node/pandi` and `/tmp/pandi-local-release/bun/pandi` start interactive mode; run each in tmux, submit a prompt, and wait for the model reply before considering the interactive smoke test passed. Failures are release blockers unless the user explicitly accepts the risk.
 
 3. **Run the release script**:
    ```bash

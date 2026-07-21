@@ -9,7 +9,7 @@ const packages = [
 	{ directory: "packages/agent", name: "@earendil-works/pi-agent-core" },
 	{ directory: "packages/storage/sqlite-node", name: "@earendil-works/pi-storage-sqlite-node" },
 	{ directory: "packages/tui", name: "@earendil-works/pi-tui" },
-	{ directory: "packages/coding-agent", name: "@earendil-works/pi-coding-agent" },
+	{ directory: "packages/coding-agent", name: "pandi-code" },
 ];
 
 const dryRun = process.argv.includes("--dry-run");
@@ -52,7 +52,12 @@ function assertBuildOutputExists(directory) {
 
 function validatePack(directory) {
 	const result = run("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], { capture: true, cwd: directory });
-	const packed = JSON.parse(result.stdout)[0];
+	const packResult = JSON.parse(result.stdout);
+	const packageName = readPackageJson(directory).name;
+	const packed = Array.isArray(packResult) ? packResult[0] : packResult[packageName];
+	if (!packed?.filename || !packed.files) {
+		throw new Error(`npm pack did not return validation metadata for ${packageName}`);
+	}
 	console.log(`  ${packed.filename}: ${packed.files.length} files, ${packed.size} bytes packed, ${packed.unpackedSize} bytes unpacked`);
 }
 
@@ -88,7 +93,7 @@ if (versions.length !== 1) {
 	throw new Error(`Publish packages are not lockstep versioned: ${versions.join(", ")}`);
 }
 
-console.log(`Publishing pi packages at ${versions[0]}${dryRun ? " (dry run)" : ""}\n`);
+console.log(`Publishing Pandi packages at ${versions[0]}${dryRun ? " (dry run)" : ""}\n`);
 
 const packageStates = packages.map((pkg) => ({
 	...pkg,

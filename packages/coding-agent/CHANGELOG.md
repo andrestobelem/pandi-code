@@ -6,6 +6,10 @@
 
 - Added the Pandi CLI identity, `.pandi` configuration directory, and cross-platform source launchers ([#1](https://github.com/andrestobelem/pandi-code/issues/1)).
 
+### Changed
+
+- Packaged the application as `pandi-code` with `pandi` Node and Bun release artifacts, isolated from official Pi updates and announcements ([#2](https://github.com/andrestobelem/pandi-code/issues/2)).
+
 ## [0.81.0] - 2026-07-21
 
 ### New Features

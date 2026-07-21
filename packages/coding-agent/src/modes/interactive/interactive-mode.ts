@@ -49,6 +49,7 @@ import {
 	getDebugLogPath,
 	getDocsPath,
 	getShareViewerUrl,
+	isOfficialPiDistribution,
 	VERSION,
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
@@ -1003,7 +1004,7 @@ export class InteractiveMode {
 	}
 
 	private reportInstallTelemetry(version: string): void {
-		if (process.env.PI_OFFLINE) {
+		if (!isOfficialPiDistribution() || process.env.PI_OFFLINE) {
 			return;
 		}
 
@@ -2738,7 +2739,7 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/dementedelves") {
+			if (text === "/dementedelves" && isOfficialPiDistribution()) {
 				this.handleDementedDelves();
 				this.editor.setText("");
 				return;
