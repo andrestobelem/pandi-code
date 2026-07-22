@@ -1,6 +1,6 @@
 {
 	"name": "pandi-code",
-	"version": "0.81.2",
+	"version": "0.81.3",
 	"description": "Pandi coding agent CLI with read, bash, edit, write tools and session management",
 	"type": "module",
 	"piConfig": {

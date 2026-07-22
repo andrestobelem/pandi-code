@@ -1,12 +1,12 @@
 {
 	"name": "pandi-code",
-	"version": "0.81.2",
+	"version": "0.81.3",
 	"lockfileVersion": 3,
 	"requires": true,
 	"packages": {
 		"": {
 			"name": "pandi-code",
-			"version": "0.81.2",
+			"version": "0.81.3",
 			"license": "MIT",
 			"dependencies": {
 				"@earendil-works/pi-agent-core": "0.81.1",

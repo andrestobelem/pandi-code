@@ -1,10 +1,10 @@
 {
 	"name": "pandi-code-install",
-	"version": "0.81.2",
+	"version": "0.81.3",
 	"private": true,
 	"description": "Lockfile root used by the Pandi installer and updater.",
 	"dependencies": {
-		"pandi-code": "0.81.2"
+		"pandi-code": "0.81.3"
 	},
 	"overrides": {
 		"rimraf": "6.1.2",

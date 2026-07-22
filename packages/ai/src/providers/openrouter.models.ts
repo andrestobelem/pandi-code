@@ -561,6 +561,10 @@ export const OPENROUTER_MODELS = values as {
 		id: "openai/gpt-5-nano";
 		provider: "openrouter";
 	};
+	"openai/gpt-5-nano:batch": Model<"openai-completions"> & {
+		id: "openai/gpt-5-nano:batch";
+		provider: "openrouter";
+	};
 	"openai/gpt-5-pro": Model<"openai-completions"> & {
 		id: "openai/gpt-5-pro";
 		provider: "openrouter";
