@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### New Features
+
+- Use the `pandi` CLI with `.pandi` configuration and source launchers. See the [quickstart](docs/quickstart.md).
+- Install Pandi as `pandi-code`, with Pandi-named Node and Bun release artifacts. See [development](docs/development.md).
+
 ### Added
 
 - Added the Pandi CLI identity, `.pandi` configuration directory, and cross-platform source launchers ([#1](https://github.com/andrestobelem/pandi-code/issues/1)).
@@ -11,6 +16,10 @@
 - Packaged the application as `pandi-code` with `pandi` Node and Bun release artifacts, isolated from official Pi updates and announcements ([#2](https://github.com/andrestobelem/pandi-code/issues/2)).
 - Rebranded user-facing documentation, contribution workflows, project resources, and examples for Pandi ([#3](https://github.com/andrestobelem/pandi-code/issues/3)).
 - Kept reusable Pi libraries on their upstream package identities and restricted Pandi npm publishing to `pandi-code` ([#4](https://github.com/andrestobelem/pandi-code/issues/4)).
+
+### Fixed
+
+- Fixed Moonshot Kimi K3 model metadata for OpenAI-style thinking and reasoning-effort support.
 
 ## [0.81.0] - 2026-07-21
 

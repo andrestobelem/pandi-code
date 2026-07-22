@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Moonshot Kimi K3 model metadata for OpenAI-style thinking and reasoning-effort support.
+
 ## [0.81.0] - 2026-07-21
 
 ### Added
