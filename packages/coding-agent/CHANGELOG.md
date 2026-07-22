@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored the default stream fallback for extensions using the pre-0.81 agent-core API ([#6915](https://github.com/earendil-works/pi/issues/6915)).
+
 ## [0.81.1] - 2026-07-22
 
 ### New Features
