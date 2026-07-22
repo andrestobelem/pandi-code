@@ -9,7 +9,7 @@ const repoRoot = resolve(scriptDir, "..");
 const codingAgentDir = join(repoRoot, "packages/coding-agent");
 const rootLockfilePath = join(repoRoot, "package-lock.json");
 const shrinkwrapPath = join(codingAgentDir, "npm-shrinkwrap.json");
-const internalPackagePrefix = "@earendil-works/pi-";
+const pandiOwnedWorkspaceNames = new Set(["pandi-code"]);
 const allowedInstallScriptPackages = new Map([
 	["@google/genai@1.52.0", "preinstall is a no-op in the published package"],
 	["protobufjs@7.6.4", "postinstall only warns about protobufjs version scheme mismatches"],
@@ -136,7 +136,7 @@ function getInternalWorkspaces(lockPackages) {
 		if (!lockPath.startsWith("packages/") || lockPath.includes("/node_modules/") || !entry.name || !entry.version) {
 			continue;
 		}
-		if (!entry.name.startsWith(internalPackagePrefix)) {
+		if (!pandiOwnedWorkspaceNames.has(entry.name)) {
 			continue;
 		}
 
@@ -213,7 +213,10 @@ function addExternalPackage(lockPackages, shrinkwrapPackages, addedPaths, queue,
 	}
 
 	const entry = lockPackages[lockPath];
-	shrinkwrapPackages[lockPath] = copyLockEntry(entry);
+	const outputPath = lockPath.startsWith("packages/coding-agent/")
+		? lockPath.slice("packages/coding-agent/".length)
+		: lockPath;
+	shrinkwrapPackages[outputPath] = copyLockEntry(entry);
 	addedPaths.add(lockPath);
 
 	for (const dependencyName of Object.keys(packageDependencies(entry))) {

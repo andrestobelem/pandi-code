@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * Syncs all non-private workspace package dependency versions to match their current versions.
- * This ensures release packages, including unpublished packages, use lockstep versioning.
+ * Syncs Pandi-owned workspace package dependency versions to match their current versions.
+ * Upstream @earendil-works packages remain registry dependencies and must not be rewritten
+ * to unpublished local workspace versions.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -17,6 +18,7 @@ const packages = findPackageDirectories()
 	.filter((pkg) => pkg.data.private !== true);
 
 const versionMap = new Map(packages.map((pkg) => [pkg.data.name, pkg.data.version]));
+const pandiOwnedPackages = new Set(["pandi-code"]);
 
 console.log("Current versions:");
 for (const [name, version] of [...versionMap].sort(([a], [b]) => a.localeCompare(b))) {
@@ -46,6 +48,10 @@ for (const pkg of packages) {
 		}
 
 		for (const [dependencyName, currentVersion] of Object.entries(dependencies)) {
+			if (!pandiOwnedPackages.has(dependencyName)) {
+				continue;
+			}
+
 			const dependencyVersion = versionMap.get(dependencyName);
 			if (!dependencyVersion) {
 				continue;

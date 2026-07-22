@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed npm installation by pinning runtime dependencies to published upstream package versions.
+
 ## [0.81.2] - 2026-07-22
 
 ### Fixed

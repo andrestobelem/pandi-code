@@ -11,7 +11,7 @@ const outputDir = join(codingAgentDir, "install-lock");
 const rootLockfilePath = join(repoRoot, "package-lock.json");
 const outputPackageJsonPath = join(outputDir, "package.json");
 const outputLockfilePath = join(outputDir, "package-lock.json");
-const internalPackagePrefix = "@earendil-works/pi-";
+const pandiOwnedWorkspaceNames = new Set(["pandi-code"]);
 const installPackageName = "pandi-code-install";
 const allowedInstallScriptPackages = new Map([
 	["@google/genai@1.52.0", "preinstall is a no-op in the published package"],
@@ -143,7 +143,7 @@ function getInternalWorkspaces(lockPackages) {
 		if (!lockPath.startsWith("packages/") || lockPath.includes("/node_modules/") || !entry.name || !entry.version) {
 			continue;
 		}
-		if (!entry.name.startsWith(internalPackagePrefix) && lockPath !== "packages/coding-agent") {
+		if (!pandiOwnedWorkspaceNames.has(entry.name) && lockPath !== "packages/coding-agent") {
 			continue;
 		}
 
@@ -220,7 +220,10 @@ function addExternalPackage(lockPackages, installLockPackages, addedPaths, queue
 	}
 
 	const entry = lockPackages[lockPath];
-	installLockPackages[lockPath] = copyLockEntry(entry);
+	const outputPath = lockPath.startsWith("packages/coding-agent/")
+		? lockPath.slice("packages/coding-agent/".length)
+		: lockPath;
+	installLockPackages[outputPath] = copyLockEntry(entry);
 	addedPaths.add(lockPath);
 
 	for (const dependencyName of Object.keys(packageDependencies(entry))) {
@@ -294,7 +297,7 @@ function validateGeneratedFiles(installerPackageJson, installLock, internalNames
 		if (entry.dev || entry.devOptional || entry.extraneous) {
 			errors.push(`${lockPath || "root"} contains dev/extraneous metadata`);
 		}
-		if (packageName?.startsWith(internalPackagePrefix) && entry.version !== installerPackageJson.version) {
+		if (packageName && pandiOwnedWorkspaceNames.has(packageName) && entry.version !== installerPackageJson.version) {
 			errors.push(`${lockPath} internal package version ${entry.version} does not match ${installerPackageJson.version}`);
 		}
 		if (entry.hasInstallScript) {
